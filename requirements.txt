@@ -1,0 +1,13 @@
+# Our package. Volt's own requirements come through the third_party/volt submodule.
+#
+# Pinned loosely on purpose. The released checkpoints were trained and evaluated with
+# torch 2.8.0+cu128 on sm_120 cards (RTX 5090 / 5070 Ti); see the reproducibility section of the
+# README for what varies across GPU generations.
+torch>=2.4
+numpy>=1.24
+scipy>=1.11
+h5py>=3.8
+addict>=2.4          # Pointcept's config objects
+
+# Optional: only for scripts/{download,upload}_checkpoints.py
+# huggingface_hub>=0.23

@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# data and outputs
+data/
+runs/
+weights/
+*.pkl
+*.npy
+
+# released weights live outside the repository, but each checkpoint directory's config.py is
+# tracked: reproduce_val.sh reads the configuration from beside the weights, so a released
+# checkpoint always carries the configuration that produced it.
+checkpoints/*/model/
+checkpoints/*/*.pth
