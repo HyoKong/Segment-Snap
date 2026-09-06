@@ -14,8 +14,9 @@ Five stages, in order:
      stray points across the room inflate the bounding box and relocate every quantity derived
      from it, and this is what makes the derived axis and origin stable. Worth +0.037 on the
      ranking column; about a quarter of instances are affected.
-  3. AXIS. A canonical choice among the box's own axes: a translation slides along the thinnest
-     axis, a rotation hinges about the most vertical one. This alone passes ~91% of matched axes.
+  3. AXIS, and the classes differ: a translation slides along the part's own fitted plane normal
+     (per-part), a rotation hinges about a FIXED VERTICAL DIRECTION — a dataset prior that hinges
+     are vertical, the same vector for every instance, passing ~93% of matched rotations.
   4. ORIGIN (rotations only; the metric ignores translation origins). The hinge is the box edge,
      of the four parallel to the axis, FARTHEST from the part's handle, and the origin is the
      perpendicular foot of the box centroid on that edge. **The handle position comes from the

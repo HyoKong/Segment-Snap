@@ -29,9 +29,18 @@ part's own geometry**, not regressed:
    carry no connectivity constraint, so a handful of stray superpoints across the room inflate the
    box and relocate every quantity derived from it. About a quarter of instances are affected.
    Worth **+0.037** on the ranking column.
-2. **Axis** = a canonical choice among the box's own axes: a translation slides along the thinnest
-   axis, a rotation hinges about the most vertical one. This alone passes ~91 % of matched axes. A
-   learned axis head was measured to be worth at most ~+0.01 and was never built.
+2. **Axis**, and the two classes are decided differently — this is worth being precise about.
+   * A **translation** slides along the part's own **fitted plane normal** (the thinnest box axis):
+     a per-part geometric quantity, and 2100 distinct values across 2808 predicted instances.
+   * A **rotation** hinges about a **fixed vertical direction (world Z)**. That is a *dataset-level
+     prior* — hinges in indoor scans are overwhelmingly vertical — and not a per-part quantity: all
+     3477 predicted rotation axes are the same vector. It passes the 15° gate on ~93 % of matched
+     rotations, which measures the prior, not any decoding.
+
+   `AXIS_RULES` in `arti3d/geom/snap.py` also carries `most_vertical`, which selects the box axis
+   nearest vertical per part. **It is not the released default**, and it is not equivalent: the
+   angle between world Z and the per-part most-vertical box axis has a median of 3.5° but a p90 of
+   30°, and 27 % of rotation instances differ by more than the 15° gate.
 3. **Origin** (rotations only; the metric ignores translation origins) = the box edge, of the four
    parallel to the axis, **farthest from the part's handle**, with the origin at the perpendicular
    foot of the box centroid on that edge.

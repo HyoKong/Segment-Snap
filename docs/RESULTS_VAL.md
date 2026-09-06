@@ -11,7 +11,8 @@ Where a number came from somewhere else, it says so.
 ## Track 1 — movable parts and motion
 
 Released configuration: Track-1 checkpoint `epoch_14`, handles from the released Track-2 member
-(`armA_long`), largest-component cleanup at 5 cm, canonical axis, handle-far origin, connectivity
+(`armA_long`), largest-component cleanup at 5 cm, vertical-prior rotation axis / plane-normal
+translation axis, handle-far origin, connectivity
 rescoring at γ=1.
 
 | | AP50 | AP50_axis | AP50_origin | **AP50_axis_origin** |

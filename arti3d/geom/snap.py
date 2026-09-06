@@ -1,7 +1,12 @@
 """The geometric motion snap: axis and origin for a predicted part, from its points alone.
 
-No motion is learned. The axis is a canonical choice among the part's oriented-bounding-box
-axes and the origin is a point on one of the box edges parallel to that axis.
+No motion is learned, and the two classes get their axis from different places: a TRANSLATION
+slides along the part's own fitted plane normal (a per-part quantity), while a ROTATION hinges about
+a fixed vertical direction — a dataset-level prior that hinges are vertical, identical for every
+instance. `most_vertical` below is the per-part alternative and is NOT the released default.
+
+The per-part geometry that does carry the work for rotations is the ORIGIN: a point on one of the
+box edges parallel to the axis, chosen by where the part's handle is.
 """
 from __future__ import annotations
 
