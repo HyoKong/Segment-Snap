@@ -38,9 +38,10 @@ part's own geometry**, not regressed:
      rotations, which measures the prior, not any decoding.
 
    `AXIS_RULES` in `arti3d/geom/snap.py` also carries `most_vertical`, which selects the box axis
-   nearest vertical per part. **It is not the released default**, and it is not equivalent: the
-   angle between world Z and the per-part most-vertical box axis has a median of 3.5° but a p90 of
-   30°, and 27 % of rotation instances differ by more than the 15° gate.
+   nearest vertical per part. **It is not the released default**, and it is not equivalent: across
+   all 3477 predicted rotation instances the angle between world Z and the per-part most-vertical
+   box axis has a median of 1.3°, a p90 of 26.8° and a maximum of 50.7°, and **17.9 % of instances
+   differ by more than the 15° gate**.
 3. **Origin** (rotations only; the metric ignores translation origins) = the box edge, of the four
    parallel to the axis, **farthest from the part's handle**, with the origin at the perpendicular
    foot of the box centroid on that edge.
