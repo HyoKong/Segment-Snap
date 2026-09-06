@@ -17,10 +17,19 @@ Every entry point takes `--data-root` and `--gt-root`, so the roots can live any
 ## Preparation
 
 ```
-python scripts/to_pointcept_mov.py    --src data/a3d/processed --out data/pointcept_mov
-python scripts/to_pointcept_lite.py   --src data/a3d/processed --out data/pointcept_lite
-python scripts/make_superpoints.py    --root data/pointcept_mov
-python scripts/add_c2f_labels.py      --root data/pointcept_lite
+python scripts/to_pointcept_mov.py                                 # -> data/pointcept_mov
+python scripts/to_pointcept_lite.py                                # -> data/pointcept_lite
+python scripts/make_superpoints.py                                 # adds superpoint.npy
+python scripts/add_c2f_labels.py                                   # adds expand.npz
+```
+
+The source is read from `$ARTI3D_GT_ROOT` (default `data/a3d/processed`), so these take no source
+argument. Each writes to the default output above; `--out` moves it, `--roots` selects which roots
+`make_superpoints.py` walks, and `--workers N` and `--splits train validation` narrow the work:
+
+```
+python scripts/to_pointcept_mov.py  --out /path/to/pointcept_mov  --splits validation --workers 8
+python scripts/make_superpoints.py  --roots /path/to/pointcept_mov --splits validation
 ```
 
 **Row order is the contract.** Predictions are indexed against the challenge cloud's own row order,
