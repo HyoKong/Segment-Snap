@@ -73,17 +73,22 @@ It is worth **+0.044 to +0.050 on every one of five independently trained bases*
 
 `child_prob` is emitted **per query**, while the instance head emits a reordered and filtered subset.
 The child must therefore be fetched by the query index its parent came from — tracked through top-k
-and NMS — not by the parent's position in the output. Measured on the `armA_r1` base:
+and NMS — not by the parent's position in the output. Measured on the `armA_r1` base, from the same
+regenerated probability field as every other table here:
 
 | association | children | child ≥90 % inside **its own** parent | class == matched GT handle | union AP50 | + class vote |
 |---|---|---|---|---|---|
-| by position | 3317 | **7.7 %** | 54.8 % | 0.2762535806980181 | 0.290205905482789 |
-| **by query index (released)** | 4129 | **54.6 %** | 63.1 % | **0.2880115821574085** | **0.30183781722610586** |
+| by position | 3317 | **7.7 %** | 54.8 % | 0.27720366232298227 | 0.2918250868800495 |
+| **by query index (released)** | 4129 | **54.6 %** | 63.1 % | **0.28964084379094157** | **0.3037153005073384** |
 
 54.8 % class agreement on a two-class problem is barely distinguishable from chance, which is what a
-random parent's label gives you. On validation, fixing the association is worth **+0.0118** at the
-union stage and **+0.0116** after the class vote. The released implementation uses the query-index
+random parent's label gives you. On validation, fixing the association is worth **+0.0124** at the
+union stage and **+0.0119** after the class vote. The released implementation uses the query-index
 association; an earlier implementation of this pipeline used the positional one.
+
+**The effect is robust to the probability field it is measured on.** Recomputed on the stored
+field described below (produced on different hardware), the same comparison gives +0.01176 against
++0.01244 here — the absolute numbers shift by the cross-GPU margin, the conclusion does not.
 
 Why a misassociated union still gains anything: a misattributed child is **still a real handle
 detection in the right room** — the parent supplies only the score and the class, not the mask — so
@@ -121,7 +126,10 @@ Two references used to gate the rewrite were produced during the competition on 
   flipping **by whole superpoints** at the per-superpoint threshold;
 * the Track-2 probability fields for `armA_r1`, whose stored float16 values differ from this
   machine's at a **median of exactly one float16 ULP** (2.44e-04), moving the instance count by one
-  and AP50 by 1.5e-04.
+  and AP50 by 1.5e-04 at the single-model stage — and by 1.6e-03 after the union, where one fewer
+  incumbent changes how 4129 appended children interleave with the rest of the ranking.
 
-Neither is used for any number in the tables above; both are recorded because they are what the
-rewrite was checked against. Every table number comes from fields regenerated here.
+Neither feeds any number in the tables above; both are recorded because they are what the rewrite
+was checked against. The only place a stored-field figure appears at all is the cross-hardware
+robustness note in the association section, where it is labelled as such. **Every table number comes
+from fields regenerated on this machine.**

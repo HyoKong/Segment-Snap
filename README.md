@@ -68,7 +68,7 @@ subset. Fetching the child by the parent's *position* in the output rather than 
 it came from leaves only 7.7 % of children inside their own parent, against 54.6 % when the query
 index is tracked through top-k and NMS, and drives class agreement with the matched ground-truth
 handle down to 54.8 % — chance, for two classes — against 63.1 %. On validation the correct
-association is worth **+0.0118 AP50** at the union stage.
+association is worth **+0.0124 AP50** at the union stage.
 
 **Reproducibility across hardware.** Against the original research code **on the same GPU**, this
 implementation is bit-identical in masks, axes and origins, and its per-instance scores differ by no
