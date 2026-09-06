@@ -57,11 +57,11 @@ class ArtiC2FDataset(DefaultDataset):
 
     `dilate` SAYS WHETHER THIS DATASET IS THE ONE BEING TRAINED ON, and it exists because the
     original proxy for that question — `self.split == "train"` — is wrong the moment a split stops
-    being the literal string "train". The train+val runs use a json split file
-    (a json split file), for which that test evaluates False: the dilation would be silently switched
-    off for the whole run, producing an un-curriculumed model wearing a curriculum config. The
-    resulting model looks entirely normal — the ablation without the curriculum lands inside the
-    seed noise floor — so no downstream check would fire.
+    being the literal string "train". For a split given as a json file rather than a directory name,
+    that test evaluates False and the dilation would be silently switched off for the whole run,
+    producing an un-curriculumed model wearing a curriculum config. Such a model looks entirely
+    normal — the ablation without the curriculum lands inside the seed noise floor — so no
+    downstream check would fire.
 
     Default `None` keeps the behaviour of a plain directory split. A split that is NOT a plain
     directory name must state `dilate` explicitly: guessing is what makes this failure possible,

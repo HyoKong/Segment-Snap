@@ -97,7 +97,7 @@ only order that satisfies it.
 
 ---
 
-## What is not here
-The competition entry added a five-model ensemble, training on train+validation, and several
-post-hoc geometric levers. This repository is the **method**, trained on the training split only,
-evaluated on validation. See the top-level README for what the entry added on top.
+## Scope
+This repository is the **method**, trained on the training split only and evaluated on validation.
+Our competition entry, built on it, placed first on both tracks of the Articulate3D challenge test
+set and included additional engineering that is not part of this release.

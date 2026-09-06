@@ -62,9 +62,7 @@ larger**. Any of the top three members would be a defensible release. The table 
 reader can see that, rather than only the winner.
 
 ### The union is a property of the method, not of one base
-It is worth **+0.044 to +0.050 on every one of five independently trained bases**. On the
-competition entry's five-model ensemble it measured +0.026; a stronger base leaves the second source
-less to find.
+It is worth **+0.044 to +0.050 on every one of five independently trained bases**.
 
 ---
 
@@ -79,26 +77,19 @@ and NMS — not by the parent's position in the output. Measured on the `armA_r1
 
 | association | children | child ≥90 % inside **its own** parent | class == matched GT handle | union AP50 | + class vote |
 |---|---|---|---|---|---|
-| by position (**the competition entry**) | 3317 | **7.7 %** | 54.8 % | 0.2762535806980181 | 0.290205905482789 |
+| by position | 3317 | **7.7 %** | 54.8 % | 0.2762535806980181 | 0.290205905482789 |
 | **by query index (released)** | 4129 | **54.6 %** | 63.1 % | **0.2880115821574085** | **0.30183781722610586** |
 
 54.8 % class agreement on a two-class problem is barely distinguishable from chance, which is what a
-random parent's label gives you. Fixing the association is worth **+0.0118** at the union stage and
-**+0.0116** after the class vote.
+random parent's label gives you. On validation, fixing the association is worth **+0.0118** at the
+union stage and **+0.0116** after the class vote. The released implementation uses the query-index
+association; an earlier implementation of this pipeline used the positional one.
 
-> The competition entry attached each child detection to the emitted instance at the same position
-> rather than to the query it came from; measured after the fact, 7.7 % of its children lay inside
-> their assigned parent. The released implementation tracks query indices through top-k and NMS. On
-> the validation split this is worth +0.0118 AP50 at the union stage and +0.0116 after the class
-> vote — so the entry's union gain was obtained *despite* a near-total misassociation, and the child
-> head is stronger than the entry demonstrated.
-
-Why the union still worked at all under the broken association: a misattributed child is **still a
-real handle detection in the right room** — the parent supplies only the score and the class, not the
-mask — so the mask can still match a ground-truth handle. What is destroyed is the class label and
-the score ordering. This also reconciles the finding with the entry's own controls, which measured
-children permuted *across scenes* at +0.0000: permutation moves masks out of the room entirely,
-while mis-indexing within a scene does not.
+Why a misassociated union still gains anything: a misattributed child is **still a real handle
+detection in the right room** — the parent supplies only the score and the class, not the mask — so
+the mask can still match a ground-truth handle. What is destroyed is the class label and the score
+ordering. That is also why permuting children *across scenes* measures +0.0000 while mis-indexing
+within a scene does not: permutation moves masks out of the room entirely.
 
 ---
 

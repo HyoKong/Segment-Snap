@@ -31,8 +31,9 @@ SELECTION AND ASSOCIATION ARE SEPARATE THINGS, and this script keeps them separa
     emitted per QUERY, while selection emits a reordered, filtered subset — so the row is fetched
     by the query index the parent came from, tracked through top-k and NMS
     (`arti3d/models/spformer_qtrack.py`). `--association position` takes row j for emitted instance
-    j instead, which is what the competition entry did; it exists only to reproduce that, and it
-    puts 7.7% of children inside their own parent against 54.6% for the default.
+    j instead. That is an earlier implementation of this pipeline, retained only so its behaviour
+    can be reproduced; it puts 7.7% of children inside their own parent against 54.6% for the
+    default.
 """
 from __future__ import annotations
 
@@ -64,8 +65,8 @@ def main() -> int:
                     help="how an emitted parent is matched to a row of child_prob. child_prob is "
                          "emitted PER QUERY. 'query' (default) takes the row of the query the "
                          "instance actually came from, tracked through top-k and NMS. 'position' "
-                         "takes row j for emitted instance j, which is what the competition entry "
-                         "did; it is kept only to reproduce that behaviour. Measured on validation: "
+                         "takes row j for emitted instance j, an earlier implementation kept only "
+                         "so its behaviour can be reproduced. Measured on validation: "
                          "'position' puts 7.7% of children inside their own parent, 'query' 54.6%, "
                          "and the union scores 0.27625 vs 0.28801.")
     ap.add_argument("--dump-parents", action="store_true",

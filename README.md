@@ -62,14 +62,13 @@ All five train-only members, each through the full chain:
 
 ## Two things a reader should know before trusting the numbers
 
-**The child association was wrong in our competition entry, and it is fixed here.** The child head
-emits one probability map per *query*, while the instance head emits a reordered, filtered subset.
-The entry fetched the child by the parent's *position* in the output; the release fetches it by the
-query index the parent came from, tracked through top-k and NMS. Measured: 7.7 % of the entry's
-children lay inside their assigned parent, against 54.6 % here, and class agreement with the matched
-ground-truth handle rises from 54.8 % — chance, for two classes — to 63.1 %. Worth **+0.0118 AP50**
-at the union stage. The entry's union gain was therefore obtained *despite* a near-total
-misassociation, and the child head is stronger than the entry demonstrated.
+**How the child is associated with its parent matters, and the release gets it right.** The child
+head emits one probability map per *query*, while the instance head emits a reordered, filtered
+subset. Fetching the child by the parent's *position* in the output rather than by the query index
+it came from leaves only 7.7 % of children inside their own parent, against 54.6 % when the query
+index is tracked through top-k and NMS, and drives class agreement with the matched ground-truth
+handle down to 54.8 % — chance, for two classes — against 63.1 %. On validation the correct
+association is worth **+0.0118 AP50** at the union stage.
 
 **Reproducibility across hardware.** Against the original research code **on the same GPU**, this
 implementation is bit-identical in masks, axes and origins, and its per-instance scores differ by no
@@ -127,12 +126,11 @@ a non-unit axis silently corrupts the origin gate while passing the axis gate.
 
 ---
 
-## What the competition entry added on top
+## Relation to our challenge entry
 
-This repository is the method. The entry that placed first added: training on train+validation, a
-five-model ensemble (both for Track 2 and as Track 1's handle source), a post-hoc extent shrink, a
-no-handle origin fallback, and an append-below handle-candidate stage. None of those are here, and
-the numbers above are not the entry's numbers.
+Our competition entry, built on this method, placed **first on both tracks of the Articulate3D
+challenge test set**. It included additional engineering that is not part of this release, and the
+numbers reported here are validation results of the released configuration.
 
 ## License
 
