@@ -1,6 +1,7 @@
 """Fetch the three released checkpoints from the Hugging Face Hub and verify their md5s.
 
-    python scripts/download_checkpoints.py --repo <user>/<repo> --dest checkpoints
+    python scripts/download_checkpoints.py --dest checkpoints            # from imsuperkong/Segment-Snap
+    python scripts/download_checkpoints.py --repo <user>/<repo> --dest checkpoints   # a mirror
 
 A silently truncated checkpoint loads without complaint and produces plausible, wrong numbers, so
 the md5 check is not optional and this script fails rather than warns.
@@ -30,7 +31,8 @@ def md5(path, chunk=1 << 20):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", required=True, help="Hugging Face repo id, <user>/<name>")
+    ap.add_argument("--repo", default="imsuperkong/Segment-Snap",
+                    help="Hugging Face repo id, <user>/<name> (default: the released checkpoints)")
     ap.add_argument("--dest", default="checkpoints")
     ap.add_argument("--verify-only", action="store_true", help="check what is already on disk")
     a = ap.parse_args()

@@ -82,8 +82,8 @@ flip by whole superpoints at the per-superpoint threshold. Inference is fp32 wit
 ## Setup
 
 ```bash
-git clone --recursive https://github.com/<user>/<repo>
-cd <repo>
+git clone --recursive https://github.com/HyoKong/Segment-Snap.git
+cd Segment-Snap
 # if you forgot --recursive:
 git submodule update --init --recursive
 bash setup.sh

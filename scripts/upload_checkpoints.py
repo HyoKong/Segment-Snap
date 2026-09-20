@@ -1,6 +1,6 @@
 """Upload the three released checkpoints to the Hugging Face Hub.
 
-    python scripts/upload_checkpoints.py --repo <user>/<repo> --src checkpoints
+    python scripts/upload_checkpoints.py --repo imsuperkong/Segment-Snap --src checkpoints
 
 Reads no credentials of its own: authenticate first with `huggingface-cli login`, which stores a
 token under your own account. Verifies every md5 against the released table BEFORE uploading, so a

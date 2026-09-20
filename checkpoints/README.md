@@ -36,7 +36,7 @@ the loaded configuration dictionaries rather than the file text.
 ## Download
 
 ```
-python scripts/download_checkpoints.py --repo <hf-user>/<repo> --dest checkpoints
+python scripts/download_checkpoints.py --dest checkpoints      # imsuperkong/Segment-Snap
 ```
 
 Verify with the md5s above before running anything; a silently truncated checkpoint loads and
