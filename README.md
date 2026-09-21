@@ -1,81 +1,62 @@
-# Articulate3D: movable parts and their motion, without a motion head
+# Segment–Snap
 
-Reference implementation for two tasks on indoor 3D scans:
+**Geometric and semantic coupling for interaction understanding in 3D scenes** — reference
+implementation and train-only checkpoints for two coupled tasks on indoor scans (Articulate3D):
 
-* **Track 1** — segment the movable parts of a scene and predict each part's motion axis and hinge
-  origin.
-* **Track 2** — segment the interactable handles.
+* **Track 1 — movable parts and their motion.** Segment each movable part and predict its motion
+  axis and hinge origin.
+* **Track 2 — interactable handles.** Segment the handles through which the parts are operated.
 
-The central claim is that **articulation does not need to be regressed**. Given a part's mask, its
-axis and hinge origin can be chosen — discretely — from the part's own oriented bounding box, and
-that choice beats a learned motion head. There is no motion head in this repository.
+Learned predictors find the broad part surfaces and the small handles. Everything else is geometry
+and one-way transfer between the two tasks:
 
-The second claim is that **the two tracks should feed each other**. Track 2's handles decide where
-Track 1 puts a hinge; Track 1's parts decide what class Track 2 gives a handle. Removing the first
-coupling costs a factor of **2.98** on Track 1's ranking metric.
+1. **Motion is decoded, not regressed.** A part's motion is chosen from its own oriented bounding
+   box: a vertical prior for rotation axes, the fitted plane normal for translation axes, and a
+   hinge line selected among the box edges by the part's predicted handle. There is no learned
+   motion head in this repository. In this setting the training-free decoder is effective, and
+   matched learned alternatives on the same frozen features did not improve on it (measured in the
+   paper; that comparison is not part of this release).
+2. **Handles → parts.** Track 2's predicted handles decide where Track 1 places a hinge. With masks
+   and axes held fixed, this raises the motion-gated AP from 0.13739 to 0.40984: **+0.272 absolute**,
+   a factor of 2.98 over a weak no-handle baseline.
+3. **Parts → handles.** The joint part-and-handle model supplies additional handle proposals,
+   appended strictly below the dense detections (**+0.050 AP50**), and predicted parts then correct
+   those proposals' motion classes (**+0.013 AP50**). Each transfer is applied once; there is no
+   feedback loop.
+
+Method: [`docs/METHOD.md`](docs/METHOD.md). Every number with its provenance:
+[`docs/RESULTS_VAL.md`](docs/RESULTS_VAL.md). Data: [`docs/DATA.md`](docs/DATA.md).
+Checkpoints: [`checkpoints/README.md`](checkpoints/README.md).
 
 ---
 
 ## Results on validation
 
-Produced by `scripts/reproduce_val.sh` from the three released checkpoints on one RTX 5070 Ti. The
-checkpoints are **train-only** — they never saw a validation scene. Full precision, and the
-provenance of every number, in [`docs/RESULTS_VAL.md`](docs/RESULTS_VAL.md).
+42 validation scenes, train-only checkpoints (they never saw a validation scene), one RTX 5070 Ti,
+fp32. `scripts/reproduce_val.sh` prints every number in both tables.
 
-### Track 1
+### Track 1 — movable parts and motion
 
-| | AP50 | AP50_axis | AP50_origin | **AP50_axis_origin** |
-|---|---|---|---|---|
-| released configuration | 0.47930 | 0.43747 | 0.43115 | **0.40984** |
-| ablation: no handles, origin = box centroid | 0.47930 | 0.43747 | 0.14373 | 0.13739 |
+| configuration | AP50 | AP50_axis | AP50_origin | **AP50_axis_origin** (ranking column) |
+|---|---:|---:|---:|---:|
+| **released decode** (origins from the predicted handles) | 0.47930 | 0.43747 | 0.43115 | **0.40984** |
+| control: origins at the box centroid (no handles) | 0.47930 | 0.43747 | 0.14373 | 0.13739 |
 
-**×2.98 from the cross-track coupling.** AP50 and AP50_axis are identical to the last digit in both
-rows — handles enter only through the origin, so nothing else can move.
+AP50 and the axis-gated column are identical to the last digit: handles enter the pipeline only
+through the hinge origin. The +0.27245 on the ranking column has a paired scene-jackknife 95 %
+interval of [+0.2186, +0.3263]. All of it is on rotations (+0.5449 on the rotation class); the
+metric's origin test never binds on a translation, so that class is unchanged.
 
-### Track 2
+### Track 2 — interactable handles
 
 | stage | AP50 |
-|---|---|
-| single semantic model | 0.24635 |
-| + child-head union (the *S2* joint model) | 0.29649 |
+|---|---:|
+| dense semantic model | 0.24635 |
+| + handle proposals from the joint model, appended below | 0.29649 |
 | + class vote from Track 1's parts | **0.30991** |
 
-### Which Track-2 checkpoint we release, and why that choice is weak
-
-All five train-only members, each through the full chain:
-
-| member | single | + union | + class vote |
-|---|---|---|---|
-| `armA_r1` | 0.24419 | 0.28964 | 0.30372 |
-| **`armA_long` — released** | **0.24635** | **0.29649** | **0.30991** |
-| `armA_noc2f` | 0.24299 | 0.29260 | 0.30599 |
-| `armA_seed2` | 0.23977 | 0.28378 | 0.29696 |
-| `armA_bgw03` | 0.24527 | 0.29466 | 0.30932 |
-
-> The released member is the argmax of the full validation pipeline. The top two members are
-> separated by 0.00058, while two runs of the same configuration differing only in training seed are
-> separated by 0.00675 — 11.6× larger — so this selection is not resolved by the evidence, and any of the top three
-> members would be a defensible release.
-
-
----
-
-## Two things a reader should know before trusting the numbers
-
-**How the child is associated with its parent matters, and the release gets it right.** The child
-head emits one probability map per *query*, while the instance head emits a reordered, filtered
-subset. Fetching the child by the parent's *position* in the output rather than by the query index
-it came from leaves only 7.7 % of children inside their own parent, against 54.6 % when the query
-index is tracked through top-k and NMS, and drives class agreement with the matched ground-truth
-handle down to 54.8 % — chance, for two classes — against 63.1 %. On validation the correct
-association is worth **+0.0124 AP50** at the union stage.
-
-**Reproducibility across hardware.** Against the original research code **on the same GPU**, this
-implementation is bit-identical in masks, axes and origins, and its per-instance scores differ by no
-more than two runs of the same code differ from each other (max 2×10⁻⁵, from non-deterministic GPU
-reductions in the instance head) — which changes no metric column. Against a reference artifact
-produced on an **RTX 5090**, Track 1 reproduces the ranking column to **4×10⁻⁶**: nine of 6285 masks
-flip by whole superpoints at the per-superpoint threshold. Inference is fp32 with TF32 disabled.
+Full precision, the per-class split, the component ladder, the controls, the released model among
+its training family, and cross-hardware reproducibility: [`docs/RESULTS_VAL.md`](docs/RESULTS_VAL.md).
 
 ---
 
@@ -84,55 +65,97 @@ flip by whole superpoints at the per-superpoint threshold. Inference is fp32 wit
 ```bash
 git clone --recursive https://github.com/HyoKong/Segment-Snap.git
 cd Segment-Snap
-# if you forgot --recursive:
-git submodule update --init --recursive
-bash setup.sh
 ```
 
 The backbone lives in `third_party/volt`, a submodule pinned to the `articulate3d` branch of our
-Volt fork. Our changes to Volt are **four commits** on top of upstream `df41b45`, and they are
-exactly these:
+[Volt fork](https://github.com/HyoKong/Volt) (`bash setup.sh` fetches it if the clone was not
+recursive). Our four commits on top of upstream Volt `df41b45`:
 
 | commit | what it does |
 |---|---|
-| `models: make optional model families import-optional` | the model registry loads without every compiled extension (spconv, pointops, pointgroup_ops); missing families warn and are skipped |
-| `volt: flash-attn fallback and RoPE frequency scaling` | falls back to `scaled_dot_product_attention` where flash-attn has no build, and adds rotary-frequency scaling so a model pretrained at one voxel grid transfers to another |
+| `models: make optional model families import-optional` | the model registry loads without every compiled extension (pointops, pointgroup_ops); missing families warn and are skipped |
+| `volt: flash-attn fallback and RoPE frequency scaling` | falls back to `scaled_dot_product_attention` where flash-attn has no build; rotary-frequency scaling lets a model pretrained at one voxel grid transfer to another |
 | `train: skip OOM and degenerate batches instead of aborting the run` | one unlucky crop no longer kills a multi-day run |
-| `test: decouple test-loader workers and pin_memory from batch size` | test-time data loading was tied to a batch size of 1, leaving the GPU idle through each scene's CPU voxelisation |
+| `test: decouple test-loader workers and pin_memory from batch size` | test-time loading was tied to a batch size of 1, leaving the GPU idle through each scene's CPU voxelisation |
 
-Data preparation: [`docs/DATA.md`](docs/DATA.md). Checkpoints and their md5s:
-[`checkpoints/README.md`](checkpoints/README.md).
-
-## Reproducing
+**Environment.** Python 3.12. The numbers above were produced with `torch 2.8.0+cu128`; the
+commands below install that exact stack (with plain `pip`, drop the leading `uv`).
 
 ```bash
-DATA_ROOT=... LITE_ROOT=... ARTI3D_GT_ROOT=... bash scripts/reproduce_val.sh
+uv venv --python 3.12 .venv && source .venv/bin/activate
+# one resolution pass, so nothing later upgrades torch behind your back
+uv pip install --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple \
+    --index-strategy unsafe-best-match \
+    torch==2.8.0 torchvision==0.23.0 numpy scipy h5py addict \
+    timm einops open3d plyfile scikit-learn pandas plotly termcolor yapf tqdm pyyaml peft
+# must match the torch build exactly; they come from the PyG wheel index, not PyPI
+uv pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
+# imported by the backbone's model registry; never used in computation
+uv pip install spconv-cu126
+export PYTHONPATH="$PWD:$PWD/third_party/volt"
 ```
 
-Six stages in the only order the dependency graph allows — Track 2's instances are Track 1's
-handles, and Track 1's parts are Track 2's class prior. The script prints both tracks' tables and the
-Track-1 ablation.
+`requirements.txt` lists our package's own imports (torch, numpy, scipy, h5py, addict). The second
+group above is imported by the backbone's model registry and dataset code (Pointcept), so it is
+required at import time even though the released models use none of it. Volt's compiled extensions
+and flash-attn are optional: without them the registry skips the model families this project does
+not use, and attention falls back to `scaled_dot_product_attention` (numerically equivalent, slower).
 
-Training: [`docs/METHOD.md`](docs/METHOD.md) describes each model; `configs/arti3d/` holds the
-configurations exactly as they were trained.
+## Reproducing the tables
 
-## Evaluation
+```bash
+# the three checkpoints, from Hugging Face imsuperkong/Segment-Snap, md5-verified (4.9 GB)
+python scripts/download_checkpoints.py --dest checkpoints
 
-`arti3d/eval/` vendors the organisers' evaluator **byte-identically**, so any divergence from
-official scoring is visible in a diff. `python -m arti3d.eval.selftest` runs known-answer tests
-against it, including two sharp edges worth knowing about: an unclipped `arccos` that returns NaN for
-a *bit-exact* axis, and an origin projection that divides by the axis norm once rather than twice, so
-a non-unit axis silently corrupts the origin gate while passing the axis gate.
+# data preparation: docs/DATA.md (four scripts over the organisers' processed release)
 
----
+DATA_ROOT=data/pointcept_mov LITE_ROOT=data/pointcept_lite ARTI3D_GT_ROOT=data/a3d/processed \
+    bash scripts/reproduce_val.sh
+```
+
+The script runs six stages in the only order the dependency graph allows — Track 2's handle
+instances are Track 1's hinge cue, and Track 1's parts are Track 2's class prior — and prints both
+tables plus the no-handle control. The evaluator is the organisers' own, vendored byte-identically
+under `arti3d/eval/`; its known-answer tests run with
+
+```bash
+ARTI3D_GT_ROOT=data/a3d/processed python -m arti3d.eval.selftest
+```
+
+## Repository layout
+
+```
+arti3d/            the package: geom/ (box, axis, hinge, rescoring) · prep/ (superpoints, components)
+                   datasets/ · models/ (SPFormer selection, query tracking, the joint model) · eval/ (vendored evaluator)
+scripts/           the six inference stages, reproduce_val.sh, data preparation, checkpoint download
+configs/arti3d/    training configurations, exactly as trained
+checkpoints/       the three released config.py files; the weights download here
+docs/              METHOD.md · RESULTS_VAL.md · DATA.md
+third_party/volt   the Volt backbone (submodule)
+```
+
+Training uses the configurations in `configs/arti3d/` through Volt's trainer; the recipe is in
+[`docs/METHOD.md`](docs/METHOD.md#training).
 
 ## Relation to our challenge entry
 
-Our competition entry, built on this method, placed **first on both tracks of the Articulate3D
-challenge test set**. It included additional engineering that is not part of this release, and the
-numbers reported here are validation results of the released configuration.
+Our competition entry, built on this method, placed first on both tracks of the Articulate3D
+challenge test set. It included additional engineering that is not part of this release, and every
+number in this repository is a validation result of the released configuration.
+
+## Citation
+
+```bibtex
+@article{kong2026segmentsnap,
+  title  = {Geometric and Semantic Coupling for Interaction Understanding in 3D Scenes},
+  author = {Kong, Hanyang and Yang, Xingyi},
+  year   = {2026},
+  note   = {preprint in preparation}
+}
+```
 
 ## License
 
-MIT. The vendored evaluator retains its upstream attribution; the Volt submodule is MIT
-(© Kadir Yilmaz).
+MIT (see `LICENSE`). `arti3d/eval/evaluate_semantic_instance.py`, `util.py` and `util_3d.py` are
+vendored byte-identically from the organisers' USDNet benchmark (MIT) and keep their own headers;
+the Volt submodule is MIT (© Kadir Yilmaz).
