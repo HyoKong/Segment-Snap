@@ -1,161 +1,210 @@
 # Segment–Snap
 
-**Geometric and semantic coupling for interaction understanding in 3D scenes** — reference
-implementation and train-only checkpoints for two coupled tasks on indoor scans (Articulate3D):
+**Geometric and Semantic Coupling for Interaction Understanding in 3D Scenes**
 
-* **Track 1 — movable parts and their motion.** Segment each movable part and predict its motion
-  axis and hinge origin.
-* **Track 2 — interactable handles.** Segment the handles through which the parts are operated.
+[Hanyang Kong](https://hyokong.github.io/)¹ · [Xingyi Yang](https://adamdad.github.io/)²†<br>
+¹ National University of Singapore · ² The Hong Kong Polytechnic University<br>
+† Corresponding author: [Xingyi Yang](mailto:xingyi.yang@polyu.edu.hk)
 
-Learned predictors find the broad part surfaces and the small handles. Everything else is geometry
-and one-way transfer between the two tasks:
+<p align="center">
+  <a href="https://hyokong.github.io/segment-snap-page/"><img src="docs/assets/button-project.svg" width="152" height="40" alt="Project page"></a>
+  <a href="https://huggingface.co/imsuperkong/Segment-Snap"><img src="docs/assets/button-huggingface.svg" width="166" height="40" alt="Hugging Face checkpoints"></a>
+</p>
 
-1. **Motion is decoded, not regressed.** A part's motion is chosen from its own oriented bounding
-   box: a vertical prior for rotation axes, the fitted plane normal for translation axes, and a
-   hinge line selected among the box edges by the part's predicted handle. There is no learned
-   motion head in this repository. In this setting the training-free decoder is effective, and
-   matched learned alternatives on the same frozen features did not improve on it (measured in the
-   paper; that comparison is not part of this release).
-2. **Handles → parts.** Track 2's predicted handles decide where Track 1 places a hinge. With masks
-   and axes held fixed, this raises the motion-gated AP from 0.13739 to 0.40984: **+0.272 absolute**,
-   a factor of 2.98 over a weak no-handle baseline.
-3. **Parts → handles.** The joint part-and-handle model supplies additional handle proposals,
-   appended strictly below the dense detections (**+0.050 AP50**), and predicted parts then correct
-   those proposals' motion classes (**+0.013 AP50**). Each transfer is applied once; there is no
-   feedback loop.
+<p align="center">
+  <a href="docs/assets/teaser.svg"><img src="docs/assets/teaser.svg" width="1100" alt="Segment–Snap couples movable parts, motion, and handles: dense handles guide hinge placement; joint part queries add handle proposals; standalone parts provide class context."></a>
+</p>
 
-Method: [`docs/METHOD.md`](docs/METHOD.md). Every number with its provenance:
-[`docs/RESULTS_VAL.md`](docs/RESULTS_VAL.md). Data: [`docs/DATA.md`](docs/DATA.md).
-Checkpoints: [`checkpoints/README.md`](checkpoints/README.md).
+**Handles guide motion. Parts refine handles.** One directed pass each way, with no iterative
+feedback. Select the figure to inspect the full-resolution version.
 
----
+[Method](docs/METHOD.md) · [Validation results](docs/RESULTS_VAL.md) · [Data preparation](docs/DATA.md) · [Checkpoint guide](checkpoints/README.md)
 
-## Results on validation
+Segment–Snap recovers **movable parts, their motion, and the handles used to operate them** from a
+3D indoor scan. A door's surface constrains its possible motion, but its handle helps identify
+which side is hinged. In the other direction, a part provides context for finding and classifying
+small handles. Our method makes these complementary geometric and semantic relationships explicit.
 
-42 validation scenes, train-only checkpoints (they never saw a validation scene), one RTX 5070 Ti,
-fp32. `scripts/reproduce_val.sh` prints every number in both tables.
+This repository contains the reference implementation, training configurations, and pretrained
+checkpoints for the public Articulate3D validation experiments.
 
-### Track 1 — movable parts and motion
+## The idea
 
-| configuration | AP50 | AP50_axis | AP50_origin | **AP50_axis_origin** (ranking column) |
+Three independently trained predictors see the same scene and serve different roles:
+
+| Predictor | What it produces | How it is used |
+|---|---|---|
+| Movable-part predictor | Part masks and rotation/translation classes | Final part segmentation, geometric motion decoding, and context for handle labels |
+| Dense handle predictor | Pointwise handle probabilities | Initial handle instances, hinge-location cues, and fallback label evidence |
+| Joint part-handle predictor | Its own parent parts and per-query handle masks | Additional handle proposals; its parent parts do not replace the standalone part output |
+
+**Handles guide geometry.** A training-free decoder fits a box to each part's reliable support.
+It uses a vertical-axis prior for rotations and the fitted surface normal for translations.
+A nearby predicted handle selects a candidate hinge line on the opposite side of a rotating part.
+
+**Parts support handle understanding.** The joint predictor contributes complementary handle
+proposals. The standalone part predictions then help correct these proposals' motion classes,
+with overlapping dense detections as fallback evidence. Dense detections themselves stay unchanged.
+
+Each transfer is applied once: the final handle set is **not** fed back into motion decoding.
+Only the geometric decoder is training-free; all three predictors are learned. See the
+[method guide](docs/METHOD.md) for the dataflow, assumptions, and implementation.
+
+## Validation highlights
+
+Results use the released checkpoints on **42 public validation scenes**. AP values below are
+percentages; gains are percentage points (pp), calculated before rounding. The models were
+optimized on the 195 training scenes, while validation informed model, checkpoint, and
+hyperparameter selection.
+
+### Handle-guided part motion
+
+| Origin rule | Part AP50 | + Axis | + Origin | + Axis & origin |
 |---|---:|---:|---:|---:|
-| **released decode** (origins from the predicted handles) | 0.47930 | 0.43747 | 0.43115 | **0.40984** |
-| control: origins at the box centroid (no handles) | 0.47930 | 0.43747 | 0.14373 | 0.13739 |
+| Part centroid, without handles | 47.93 | 43.75 | 14.37 | 13.74 |
+| **Predicted-handle guidance** | 47.93 | 43.75 | **43.11** | **40.98** |
 
-AP50 and the axis-gated column are identical to the last digit: handles enter the pipeline only
-through the hinge origin. The +0.27245 on the ranking column has a paired scene-jackknife 95 %
-interval of [+0.2186, +0.3263]. All of it is on rotations (+0.5449 on the rotation class); the
-metric's origin test never binds on a translation, so that class is unchanged.
+Changing only hinge origins gives **+27.25 pp** in motion-gated AP50. Masks, classes, scores, and
+axes are fixed in this comparison. The gain is rotation-specific: +54.49 pp on rotations and
+zero on translations, whose origins are not evaluated.
 
-### Track 2 — interactable handles
+### Part-informed handle detection
 
-| stage | AP50 |
-|---|---:|
-| dense semantic model | 0.24635 |
-| + handle proposals from the joint model, appended below | 0.29649 |
-| + class vote from Track 1's parts | **0.30991** |
+| Handle output | AP50 | Gain over preceding row |
+|---|---:|---:|
+| Dense detections | 24.63 | — |
+| + Joint predictor's proposals | 29.65 | +5.01 |
+| + Contextual label correction | **30.99** | +1.34 |
 
-Full precision, the per-class split, the component ladder, the controls, the released model among
-its training family, and cross-hardware reproducibility: [`docs/RESULTS_VAL.md`](docs/RESULTS_VAL.md).
+The proposal gain is supported by paired scene analysis and training-seed checks. The final
+label-correction gain includes both part context and dense-handle fallback; its size varies with
+the joint predictor's training seed. These results support proposal complementarity, not an
+isolated claim that conditioning alone causes the gain.
 
----
+The [results guide](docs/RESULTS_VAL.md) defines every metric, explains the controls and uncertainty,
+and shows which experiments the release reproduces.
 
-## Setup
+### Challenge result
+
+Our competition entry placed **first in both evaluated outputs** of the Articulate3D challenge:
+48.28 motion-gated part AP50 and 34.46 handle AP50, as recorded in the September 6, 2026
+[leaderboard snapshot](https://art3d-challenge.mooo.com/web/challenges/challenge-page/1/leaderboard/).
+That entry used additional engineering; these hidden-test scores are not the expected output of
+the released validation recipe.
+
+## Quick start
+
+Run the commands below from the repository root. Validation inference needs a CUDA-capable GPU,
+the processed dataset, and all three released checkpoints.
+
+### 1. Set up the environment
 
 ```bash
 git clone --recursive https://github.com/HyoKong/Segment-Snap.git
 cd Segment-Snap
-```
 
-The backbone lives in `third_party/volt`, a submodule pinned to the `articulate3d` branch of our
-[Volt fork](https://github.com/HyoKong/Volt) (`bash setup.sh` fetches it if the clone was not
-recursive). Our four commits on top of upstream Volt `df41b45`:
+python3.12 -m venv .venv
+source .venv/bin/activate
 
-| commit | what it does |
-|---|---|
-| `models: make optional model families import-optional` | the model registry loads without every compiled extension (pointops, pointgroup_ops); missing families warn and are skipped |
-| `volt: flash-attn fallback and RoPE frequency scaling` | falls back to `scaled_dot_product_attention` where flash-attn has no build; rotary-frequency scaling lets a model pretrained at one voxel grid transfer to another |
-| `train: skip OOM and degenerate batches instead of aborting the run` | one unlucky crop no longer kills a multi-day run |
-| `test: decouple test-loader workers and pin_memory from batch size` | test-time loading was tied to a batch size of 1, leaving the GPU idle through each scene's CPU voxelisation |
+python -m pip install torch==2.8.0 torchvision==0.23.0 \
+  --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -r requirements.txt \
+  timm einops open3d plyfile scikit-learn pandas plotly \
+  termcolor yapf tqdm pyyaml peft huggingface_hub spconv-cu126
+python -m pip install torch_scatter torch_cluster \
+  --no-index --only-binary=:all: \
+  -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 
-**Environment.** Python 3.12. The numbers above were produced with `torch 2.8.0+cu128`; the
-commands below install that exact stack (with plain `pip`, drop the leading `uv`).
-
-```bash
-uv venv --python 3.12 .venv && source .venv/bin/activate
-# one resolution pass, so nothing later upgrades torch behind your back
-uv pip install --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple \
-    --index-strategy unsafe-best-match \
-    torch==2.8.0 torchvision==0.23.0 numpy scipy h5py addict \
-    timm einops open3d plyfile scikit-learn pandas plotly termcolor yapf tqdm pyyaml peft
-# must match the torch build exactly; they come from the PyG wheel index, not PyPI
-uv pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
-# imported by the backbone's model registry; never used in computation
-uv pip install spconv-cu126
 export PYTHONPATH="$PWD:$PWD/third_party/volt"
 ```
 
-`requirements.txt` lists our package's own imports (torch, numpy, scipy, h5py, addict). The second
-group above is imported by the backbone's model registry and dataset code (Pointcept), so it is
-required at import time even though the released models use none of it. Volt's compiled extensions
-and flash-attn are optional: without them the registry skips the model families this project does
-not use, and attention falls back to `scaled_dot_product_attention` (numerically equivalent, slower).
+The reference environment uses Python 3.12 and PyTorch 2.8.0 with CUDA 12.8. Match the PyG wheels
+to your Python, PyTorch, and CUDA build if you choose another environment. Restore `PYTHONPATH`
+when opening a new shell.
 
-## Reproducing the tables
+`requirements.txt` lists the project's minimal imports, **not the complete Volt/Pointcept
+environment**. Likewise, `setup.sh` initializes the submodule and installs that minimal list;
+it does not replace the full setup above. The current Pointcept registry and trainer import
+`spconv` even though the Volt backbone does not use sparse convolutions in its forward pass.
+Volt's optional `flash-attn` dependency has an in-tree PyTorch attention fallback. The other
+vendored model families do not need to be installed or trained for this release.
 
-```bash
-# the three checkpoints, from Hugging Face imsuperkong/Segment-Snap, md5-verified (4.9 GB)
-python scripts/download_checkpoints.py --dest checkpoints
+### 2. Prepare the data
 
-# data preparation: docs/DATA.md (four scripts over the organisers' processed release)
+Follow the [data guide](docs/DATA.md) to obtain the organizers' processed release and create the
+aligned part and handle inputs. The default layout is:
 
-DATA_ROOT=data/pointcept_mov LITE_ROOT=data/pointcept_lite ARTI3D_GT_ROOT=data/a3d/processed \
-    bash scripts/reproduce_val.sh
+```text
+data/
+├── a3d/processed/     # Original processed scenes and evaluation annotations
+├── pointcept_mov/    # Part inputs, including superpoints
+└── pointcept_lite/   # Dense handle inputs
 ```
 
-The script runs six stages in the only order the dependency graph allows — Track 2's handle
-instances are Track 1's hinge cue, and Track 1's parts are Track 2's class prior — and prints both
-tables plus the no-handle control. The evaluator is the organisers' own, vendored byte-identically
-under `arti3d/eval/`; its known-answer tests run with
+The three predictors must use the same point ordering and coordinate frame. Keep the original
+processed data available: evaluation and point-order checks read it directly.
+
+### 3. Download the checkpoints
+
+```bash
+python scripts/download_checkpoints.py --dest checkpoints
+python scripts/download_checkpoints.py --dest checkpoints --verify-only
+```
+
+The three weights total approximately 4.9 GB. The [checkpoint guide](checkpoints/README.md)
+documents their roles, configurations, checksums, and the separate backbone initialization needed
+only for retraining.
+
+### 4. Run the validation pipeline
+
+```bash
+DATA_ROOT=data/pointcept_mov \
+LITE_ROOT=data/pointcept_lite \
+ARTI3D_GT_ROOT=data/a3d/processed \
+OUT=runs/reproduce_val \
+  bash scripts/reproduce_val.sh
+```
+
+This runs the six-stage inference pipeline and a no-handle motion control. Predictions and
+`metrics.json` files are saved under `runs/reproduce_val/`; the terminal prints a summary in
+**[0, 1] AP units**, rather than the percentages used above. See
+[pipeline outputs](docs/METHOD.md#running-the-pipeline) for individual stages and file formats.
+Choose a different `OUT` directory to keep previous results.
+
+The vendored evaluator also provides known-answer checks:
 
 ```bash
 ARTI3D_GT_ROOT=data/a3d/processed python -m arti3d.eval.selftest
 ```
 
-## Repository layout
+## Repository guide
 
-```
-arti3d/            the package: geom/ (box, axis, hinge, rescoring) · prep/ (superpoints, components)
-                   datasets/ · models/ (SPFormer selection, query tracking, the joint model) · eval/ (vendored evaluator)
-scripts/           the six inference stages, reproduce_val.sh, data preparation, checkpoint download
-configs/arti3d/    training configurations, exactly as trained
-checkpoints/       the three released config.py files; the weights download here
-docs/              METHOD.md · RESULTS_VAL.md · DATA.md
-third_party/volt   the Volt backbone (submodule)
-```
-
-Training uses the configurations in `configs/arti3d/` through Volt's trainer; the recipe is in
-[`docs/METHOD.md`](docs/METHOD.md#training).
-
-## Relation to our challenge entry
-
-Our competition entry, built on this method, placed first on both tracks of the Articulate3D
-challenge test set. It included additional engineering that is not part of this release, and every
-number in this repository is a validation result of the released configuration.
+| Location | Purpose |
+|---|---|
+| [`arti3d/`](arti3d/) | Predictors, geometric decoding, data preparation, and evaluation |
+| [`scripts/`](scripts/) | Data conversion, checkpoint download, and inference entrypoints |
+| [`configs/arti3d/`](configs/arti3d/) | Training recipes; see [training instructions](docs/METHOD.md#training) |
+| [`checkpoints/`](checkpoints/) | Released configurations and checkpoint download instructions |
+| [`docs/`](docs/) | Method, data, and validation guides |
+| [`third_party/volt/`](third_party/volt/) | Pinned Volt/Pointcept backbone dependency |
 
 ## Citation
 
 ```bibtex
-@article{kong2026segmentsnap,
+@misc{kong2026segmentsnap,
   title  = {Geometric and Semantic Coupling for Interaction Understanding in 3D Scenes},
   author = {Kong, Hanyang and Yang, Xingyi},
   year   = {2026},
-  note   = {preprint in preparation}
+  note   = {Technical report},
+  url    = {https://hyokong.github.io/segment-snap-page/}
 }
 ```
 
-## License
+## Acknowledgments and license
 
-MIT (see `LICENSE`). `arti3d/eval/evaluate_semantic_instance.py`, `util.py` and `util_3d.py` are
-vendored byte-identically from the organisers' USDNet benchmark (MIT) and keep their own headers;
-the Volt submodule is MIT (© Kadir Yilmaz).
+Segment–Snap builds on [Volt](third_party/volt/README.md), Pointcept, and SPFormer, and uses
+Articulate3D's annotations and the USDNet evaluation implementation. Our contribution is the
+geometric and semantic coupling, not the underlying backbone or the benchmark.
+
+See [LICENSE](LICENSE) for this repository's MIT license. Vendored code retains its upstream
+attribution and license notices; the dataset is obtained separately under its providers' terms.

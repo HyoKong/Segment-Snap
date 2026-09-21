@@ -1,52 +1,54 @@
 # Released checkpoints
 
-Three checkpoints reproduce every number in `docs/RESULTS_VAL.md`. All three are **train-only**:
-they saw the 195 training scenes and never the 42 validation scenes. They are hosted on Hugging Face
-at [`imsuperkong/Segment-Snap`](https://huggingface.co/imsuperkong/Segment-Snap), with the
-`config.py` each was trained with beside it.
+[Overview](../README.md) · [Data](../docs/DATA.md) · [Method](../docs/METHOD.md) · [Validation results](../docs/RESULTS_VAL.md)
 
-| file | model | selected on | bytes | md5 |
-|---|---|---|---:|---|
-| `t1_spformer/model/epoch_14.pth` | Track-1 part model: SPFormer over superpoints on Volt-B | validation ranking column, post hoc | 1,705,908,057 | `6b44303b6b93618862f74f3620c5cb42` |
-| `t2_semantic/model/model_best.pth` | Track-2 dense model: 3-class point semantic segmentation on Volt-B | the trainer's mIoU | 1,504,787,251 | `2ab3ac49afee2a5fffcbf8f363e30a87` |
-| `s2_joint/model/model_last.pth` | joint model: the part model plus the child (handle) head | last | 1,714,611,973 | `6a2c0867f8191b1d0b201a720e92b18b` |
+The release provides three learned predictors for one 3D interaction-understanding pipeline: movable parts, dense handles, and joint part-handle proposals. The `t1`, `t2`, and `s2` directory names are retained because scripts and checkpoint paths use them. Download the published files from [Hugging Face: `imsuperkong/Segment-Snap`](https://huggingface.co/imsuperkong/Segment-Snap).
 
-sha256, as stored on the Hub: `cbe543cd5229f635e99aba64450c3d384971d462b004be915891e766a7774930`,
-`c96d78e53c047496276d59ab8ffdd0dc9f00a31193f8ce75e4245f2e347d87ad`,
-`c5f0be9c0667cd4a07e1f6420044bb964a1b08535dd8b44e8c1a20f3744144d6`, in the order of the table.
+| Role | Size | Weight | Configuration |
+|---|---:|---|---|
+| movable-part predictor | 1.71 GB | `t1_spformer/model/epoch_14.pth` | [`t1_spformer/config.py`](t1_spformer/config.py) |
+| dense-handle predictor | 1.50 GB | `t2_semantic/model/model_best.pth` | [`t2_semantic/config.py`](t2_semantic/config.py) |
+| joint part-handle predictor | 1.71 GB | `s2_joint/model/model_last.pth` | [`s2_joint/config.py`](s2_joint/config.py) |
 
-## Download
+## Download and verify
+
+From the repository root, download and verify all three weights:
 
 ```bash
-python scripts/download_checkpoints.py --dest checkpoints          # fetches and md5-verifies all three
-python scripts/download_checkpoints.py --dest checkpoints --verify-only   # re-check what is on disk
+python scripts/download_checkpoints.py --dest checkpoints
+python scripts/download_checkpoints.py --dest checkpoints --verify-only
 ```
 
-The script fails rather than warns on a mismatch: a silently truncated checkpoint loads without
-complaint and produces plausible, wrong numbers. `scripts/reproduce_val.sh` reads each model's
-configuration from the checkpoint directory (`checkpoints/<model>/config.py`), not from `configs/`,
-so a released checkpoint always carries the configuration that produced it. The weights themselves
-(`checkpoints/*/model/`) are gitignored.
+The downloader fetches three weights and their matching `config.py` files, then checks the
+weights against the MD5 values bundled in the script. It requires `huggingface_hub`, included
+in the [setup instructions](../README.md#quick-start). `--verify-only` checks existing weights
+without downloading. A missing weight or digest mismatch fails the command. The weights are
+intentionally gitignored.
 
-## Three things to know
+<details>
+<summary>Verification digests and exact byte sizes</summary>
 
-**The Track-1 checkpoint is not the trainer's choice.** The trainer selects on segmentation AP50,
-which is not the metric this task ranks on. `epoch_14` is the 14th of the 20 evaluation checkpoints
-of the 400-epoch schedule (70 % of training), chosen by scoring every saved checkpoint through the
-full pipeline on validation and taking the best on the ranking column; motion quality degrades
-measurably at later checkpoints even while segmentation keeps improving. The trainer's own best
-scores 0.41351 on that column (+0.0037, inside scene-sampling noise); the selection is disclosed as
-validation-based.
+| weight | bytes | MD5 | SHA-256 |
+|---|---:|---|---|
+| `t1_spformer/model/epoch_14.pth` | 1,705,908,057 | `6b44303b6b93618862f74f3620c5cb42` | `cbe543cd5229f635e99aba64450c3d384971d462b004be915891e766a7774930` |
+| `t2_semantic/model/model_best.pth` | 1,504,787,251 | `2ab3ac49afee2a5fffcbf8f363e30a87` | `c96d78e53c047496276d59ab8ffdd0dc9f00a31193f8ce75e4245f2e347d87ad` |
+| `s2_joint/model/model_last.pth` | 1,714,611,973 | `6a2c0867f8191b1d0b201a720e92b18b` | `c5f0be9c0667cd4a07e1f6420044bb964a1b08535dd8b44e8c1a20f3744144d6` |
 
-**The seeds are recorded.** `configs/arti3d/semseg-volt-B-armA-long.py` leaves `seed` unset, so the
-trainer mints one per run; the shipped `t2_semantic/config.py` records the seed the released run
-actually drew (55921373). That key is the only setting in which the three shipped `config.py` files
-differ from their counterparts in `configs/arti3d/`, verified by comparing the loaded configuration
-dictionaries rather than the file text.
+</details>
 
-**The backbone pretrain is not redistributed.** Inference from the released checkpoints does not
-need it (the weights are inside them); retraining does. The configs load it from
-`weights/volt-base-scannetpp.pth` in the repository root, from the upstream Volt release:
+## Which weights inference uses
+
+The reproduction script reads each configuration from `checkpoints/<directory>/config.py`, beside the downloaded weight, rather than from `configs/`. It uses:
+
+```text
+t1_spformer/config.py  + model/epoch_14.pth
+t2_semantic/config.py  + model/model_best.pth
+s2_joint/config.py     + model/model_last.pth
+```
+
+All released checkpoints contain an EMA state dictionary, and `infer_t1.py` and `infer_t2_sem.py` default to `--weights ema`. Use `--weights raw` only for a compatible checkpoint that lacks or should not use EMA weights. The joint-child inference loader likewise selects `ema_state_dict` when it is present.
+
+The released weights are sufficient for inference; they already contain the trained model parameters. The Volt-B initialization file is needed only for retraining. The training configurations expect it at `weights/volt-base-scannetpp.pth`:
 
 ```bash
 mkdir -p weights
@@ -54,5 +56,15 @@ curl -L -o weights/volt-base-scannetpp.pth \
   https://huggingface.co/KadirYilmaz/Volt/resolve/main/Volt_experiments/joint_training_base/scannetpp/model/model_last.pth
 ```
 
-All three checkpoints hold EMA weights, which the inference scripts load by default
-(`--weights ema`); a run trained without EMA is read with `--weights raw`.
+## Training and selection disclosure
+
+Articulate3D fine-tuning uses only the 195 training scenes; validation scenes do not contribute
+fine-tuning losses or gradient updates. The predictors start from ScanNet++-pretrained Volt-B
+weights. Validation was used for model, checkpoint, and hyperparameter selection, so this is not
+a validation-blind release.
+
+- The part checkpoint is `epoch_14`, the 14th of 20 evaluation checkpoints from the 400-epoch run. It was selected after training by the validation ranking column of the full pipeline, not by the trainer's segmentation criterion.
+- The dense-handle checkpoint is `model_best`, selected by the trainer's validation mIoU criterion.
+- The joint checkpoint is `model_last`, the final saved checkpoint.
+
+See [Method: Training](../docs/METHOD.md#training) for architectures and training settings, and [Validation results](../docs/RESULTS_VAL.md) for reported scores.

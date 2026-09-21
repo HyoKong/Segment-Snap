@@ -1,59 +1,75 @@
-# Data
+# Data preparation
 
-Everything runs on the organisers' released point clouds of
-[Articulate3D](https://huggingface.co/datasets/INSAIT-Institute/Articulate3D) (ScanNet++ scenes
-with part, motion and handle annotations), in the processed form the challenge distributes:
-per-scene `.npy` clouds with 13 columns (coordinates, colour, normal, semantic and instance labels,
-segment ids, interaction labels), articulation HDF5 files, decoded instance ground truth and the
-`expand_dict/` dilation records. Nothing here needs the held-out test split, and no script accepts
-one: the released code evaluates on the 42-scene validation split only.
+[Overview](../README.md) · [Method](METHOD.md) · [Validation results](RESULTS_VAL.md) · [Checkpoints](../checkpoints/README.md)
 
-## What you need
+The pipeline uses two aligned views of each scene: movable-part inputs and dense-handle inputs.
+The part and dense predictors read their respective views, while the joint part-handle predictor
+uses both. Historical names such as `t1`, `t2`, and `s2` remain for script and checkpoint
+compatibility; the guides describe their roles in one coupled interaction-understanding pipeline.
 
-| root | contents | used by |
-|---|---|---|
-| `data/a3d/processed/` | the organisers' processed release: `articulate3d_challenge_{mov,inter}/{train,validation}/<sid>.npy`, per-scene articulation HDF5, `instance_gt/`, `expand_dict/` | the evaluator, the preparation scripts |
-| `data/pointcept_mov/` | training-format clouds for Track 1 and the joint model: `coord / color / normal / segment / instance / superpoint` per scene | `infer_t1.py`, `infer_s2_child.py` |
-| `data/pointcept_lite/` | the same clouds for Track 2, plus `expand.npz` for the label curriculum | `infer_t2_sem.py`, `instances_t2.py`, `classvote.py` |
+## Prerequisite: the processed Articulate3D release
 
-Every entry point takes `--data-root` and `--gt-root`, so the roots can live anywhere;
-`reproduce_val.sh` reads `DATA_ROOT`, `LITE_ROOT` and `ARTI3D_GT_ROOT` from the environment, and the
-evaluator's default root is `$ARTI3D_GT_ROOT`, else `data/a3d/processed`.
+Download and unpack the organisers' processed [Articulate3D release](https://huggingface.co/datasets/INSAIT-Institute/Articulate3D). These commands expect its root at `data/a3d/processed`; alternatively, set `ARTI3D_GT_ROOT` to its location before running preparation or evaluation. The release supplies the `mov` and `inter` clouds, articulation HDF5 files, decoded `instance_gt/`, and `expand_dict/` records.
 
-## Preparation
+The released preparation defaults and validation reproduction use 195 training scenes and 42 validation scenes. The held-out test split is not required by this release's evaluator workflow.
 
-Four scripts, each reading the organisers' release from `$ARTI3D_GT_ROOT` and writing the default
-root above (`--out` moves it; `--splits train validation` and `--workers N` narrow the work):
+Each source cloud is an `(N, 13)` `float32` array. Columns are, in order:
+
+| Columns | Meaning |
+|---|---|
+| `0:3` | XYZ coordinates, in metres |
+| `3:6` | RGB colour |
+| `6:9` | surface normal |
+| `9` | semantic motion/interaction class: background `0`, rotation `1`, translation `2` |
+| `10` | movable-part instance identifier |
+| `11` | organiser segment identifier |
+| `12` | interactable parent-part identifier |
+
+The `mov` and `inter` clouds have matching geometry, colour, and normal values in columns `0:9`; their label columns serve different annotations. Point order, coordinate frame, and metre units are contracts: generated arrays and predictions must retain source row `i` at row `i`. The conversion scripts check row counts, and superpoint generation refuses roots whose coordinates differ. Do not reorder, voxelise, or independently transform a cloud before using its predictions with this release.
+
+## Prepare the derived roots
+
+From the repository root, after the environment setup in [the overview](../README.md#quick-start), run:
 
 ```bash
 export PYTHONPATH="$PWD:$PWD/third_party/volt"
-python scripts/to_pointcept_mov.py                      # -> data/pointcept_mov
-python scripts/to_pointcept_lite.py                     # -> data/pointcept_lite
-python scripts/make_superpoints.py --roots data/pointcept_mov data/pointcept_lite   # adds superpoint.npy
-python scripts/add_c2f_labels.py                        # adds expand.npz under data/pointcept_lite
+export ARTI3D_GT_ROOT=data/a3d/processed
+
+python scripts/to_pointcept_mov.py --out data/pointcept_mov
+python scripts/to_pointcept_lite.py --out data/pointcept_lite
+python scripts/make_superpoints.py \
+  --roots data/pointcept_mov data/pointcept_lite
+python scripts/add_c2f_labels.py --out data/pointcept_lite
 ```
 
-Inference from the released checkpoints needs the first three (superpoints are the Track-1 model's
-attention units; both roots receive the same array because both hold the same cloud). The
-coarse-to-fine labels are needed only to **retrain** the Track-2 dense model; the `noc2f` variant
-config does not use them at all.
+The two conversion scripts must finish before `make_superpoints.py`; `add_c2f_labels.py` then copies the organiser's `inter/expand_dict` records into the lite root.
 
-## Three contracts
+`to_pointcept_mov.py` and `to_pointcept_lite.py` accept `--out`, `--workers`, and `--splits`; their defaults create both `train` and `validation`. They read the source root through `ARTI3D_GT_ROOT`, not a `--gt-root` flag. `make_superpoints.py` accepts `--roots`, `--workers`, `--splits`, `--k-thresh`, and `--seg-min`; use its defaults (`0.005`, `5`) with released checkpoints. `add_c2f_labels.py` accepts `--out` and `--track`.
 
-**Row order.** Predictions are indexed against the challenge cloud's own point order, so a silent
-permutation anywhere in preparation produces a well-formed prediction file that scores zero. The
-conversion asserts on every scene that row *i* of the output is row *i* of the source cloud, and
-`instances_t2.py` re-asserts it per scene against the source `.npy` rather than trusting the files
-on disk.
+For released-checkpoint inference, run the two conversions and superpoint generation. `expand.npz` is not read by inference; it is needed only to retrain the curriculum-based dense-handle configuration (the `noc2f` configuration does not use it). Retraining also needs the training split, while validation reproduction only needs validation data and the evaluator's processed release.
 
-**Superpoints.** `make_superpoints.py` runs a Felzenszwalb–Huttenlocher segmentation over a
-12-nearest-neighbour graph at `k_thresh` 0.005 and `seg_min` 5 — not the library defaults: the
-setting was swept for the achievable ceiling on movable parts (98.4 % macro on validation
-ground-truth masks; the nearby 0.01 setting lost 5 points on translations), since a superpoint that
-straddles a part boundary caps what any decoder above it can recover. The function is deterministic
-in the cloud and the two parameters, which matters because the superpoints are baked into the
-Track-1 checkpoint through its mask targets: a regenerated, subtly different partition would
-silently invalidate the model.
+## Derived layout
 
-**Ground truth encoding.** The evaluator encodes an instance as `semantic × 1000 + id + 1`; the
-training data keeps raw ids. Encoding is a scoring concern and happens only inside `arti3d/eval/`.
+```text
+data/
+  a3d/processed/
+    articulate3d_challenge_{mov,inter}/
+      {train,validation}/<scene>.npy
+      {train,validation}/<scene>_articulation.h5
+      instance_gt/{train,validation}/<scene>.txt
+      expand_dict/<scene>.pkl
+  pointcept_mov/<split>/<scene>/
+    coord.npy color.npy normal.npy segment.npy instance.npy superpoint.npy
+  pointcept_lite/<split>/<scene>/
+    coord.npy color.npy normal.npy segment.npy inter_gt.npy [expand.npz] [superpoint.npy]
+```
+
+`pointcept_mov/segment.npy` labels movable parts and `instance.npy` carries their raw identifiers. `pointcept_lite/segment.npy` labels handles by their parent motion class; `inter_gt.npy` carries the parent movable identifier. Keep these roots separate: both use the filename `segment.npy`, but it has different meanings. The joint predictor reads the movable root together with the lite root.
+
+## Common problems
+
+- `FileNotFoundError` under `data/a3d/processed`: set `ARTI3D_GT_ROOT` to the unpacked processed-release root, not to a track directory.
+- A missing `superpoint.npy` means `make_superpoints.py` has not completed. Regenerate it with the default parameters and the same converted roots.
+- Do not substitute the lite root for the movable root. It lacks movable instances and its `segment.npy` is a handle label.
+- A missing `expand.npz` blocks only curriculum-based dense-model retraining. Run `add_c2f_labels.py` after the lite conversion and ensure the processed release includes `expand_dict/`.
+- If evaluation reports point-count or ground-truth coverage failures, rebuild from the unmodified organiser clouds; those checks usually indicate a row-order or root mismatch.

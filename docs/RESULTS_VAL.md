@@ -1,225 +1,251 @@
-# Validation results, at full precision, with the provenance of every number
+# Validation results
 
-**Basis.** The released configuration — the three train-only checkpoints in
-[`checkpoints/README.md`](../checkpoints/README.md) through the six stages of
-`scripts/reproduce_val.sh` — on the 42 validation scenes (390 ground-truth parts: 236 rotations,
-154 translations), one RTX 5070 Ti, fp32 with TF32 disabled. Every number below comes from
-probability fields and predictions regenerated on this machine with this code. Rows marked **R** are
-printed by `reproduce_val.sh`; the other rows are the same scripts with the stated flags. Bracketed
-intervals are 95 % intervals of a *difference* from a paired leave-one-scene-out jackknife over the
-42 scenes (the interval script is not part of this release). Per-class numbers are the evaluator's
-own class averages over the same outputs; the metric is their macro average.
+[Overview](../README.md) · [Method](METHOD.md) · [Data](DATA.md) · [Checkpoints](../checkpoints/README.md)
 
-Metric names: `AP50` is mask AP at IoU 0.5; `AP50_axis` additionally requires the axis within 15°;
-`AP50_origin` the origin within 0.25 m of the ground-truth hinge line; **`AP50_axis_origin`**
-requires both and is the ranking column (`MAO_ST_ap50` in the code). Translation instances have no
-origin test.
+The experiments ask three questions: do handles resolve hinge ambiguity, do part-associated
+proposals recover additional handles, and does part context improve their motion labels?
+The first two effects are the strongest evidence for coupling; the smaller label-correction gain
+is reported with its training variability.
 
----
+## Evaluation protocol
 
-## Track 1 — movable parts and motion
+The reference configuration uses three released checkpoints, optimized on **195 training scenes**
+and evaluated on **42 public Articulate3D validation scenes**. Validation informed model,
+checkpoint, and hyperparameter selection. These are development-set results, not an untouched
+estimate of generalization. Reference inference used an RTX 5070 Ti, full precision, and TF32
+disabled.
 
-### The released decode and its fixed-mask control
+All AP scores in this guide are **percentages**. Differences are **percentage points (pp)**,
+computed before rounding the displayed endpoints. The evaluator and saved JSON files use
+fractions in [0, 1]. Each AP is macro-averaged over rotation and translation.
 
-| configuration | AP50 | AP50_axis | AP50_origin | **AP50_axis_origin** | |
-|---|---:|---:|---:|---:|---|
-| **released** — origins from the predicted handles | 0.47929751799455056 | 0.43747368928511543 | 0.431147838595354 | **0.4098392259468343** | R |
-| control — origins at the box centroid (`infer_t1.py` without `--handles`) | 0.47929751799455056 | 0.43747368928511543 | 0.14373294936305364 | 0.1373870573931177 | R |
+| Metric | What a match must satisfy | JSON key |
+|---|---|---|
+| Part or handle AP50 | Instance-mask IoU greater than 0.5 | `AP50` |
+| Part AP50 + axis | Mask criterion and sign-invariant axis error below 15° | `MA_ap50` |
+| Part AP50 + origin | Mask criterion and the rotational origin-distance test | `MO_ap50` |
+| Motion-gated part AP50 | Mask, axis, and the joint rotational origin-distance tests | `MAO_ST_ap50` |
 
-AP50 and the axis-gated column agree to the last digit, so the comparison changes only origins:
-**+0.27245 on the ranking column, 95 % [+0.2186, +0.3263]**, no single scene carrying the sign. It
-is a factor of 2.98 over the no-handle baseline; the absolute figure is the one that transfers (on
-ground-truth masks the same handles give 0.54158 → 0.83147, +0.290 at ×1.53).
+For the joint metric, the displacement between representative origins is projected perpendicular
+to each of the predicted and annotated axes; both distances must be below 0.25 m. The origin-only
+diagnostic uses the annotated axis. **Translation origins are not evaluated by these metrics.**
+The vendored evaluator also returns `MAO_ap50`, an alternative Euclidean-origin implementation;
+it is not interchangeable with the `MAO_ST_ap50` used for the motion results here.
 
-Handles from a differently trained dense model move the number by less than a hundredth
-(0.40119 and 0.41495 from two other members of the training family): the gain is in having handles,
-not in which model produced them.
+### Reading uncertainty
 
-### The same comparison per class
+An interval `[L, U]` below is an approximate 95% confidence interval for the stated **AP difference**
+in pp. It is computed by a paired leave-one-scene-out jackknife: omit each scene, recompute both
+arms on the same remaining scenes, and use the full-set difference ± 1.96 jackknife standard
+errors. It is not the minimum and maximum omitted-scene scores.
 
-| | rotation | translation |
-|---|---:|---:|
-| AP50 (both rows) | 0.69650 | 0.26209 |
-| AP50_axis (both rows) | 0.61900 | 0.25594 |
-| AP50_origin, released / centroid | 0.60020 / 0.02537 | 0.26209 / 0.26209 |
-| **AP50_axis_origin**, released / centroid | **0.56374 / 0.01883** | 0.25594 / 0.25594 |
+These intervals hold model predictions fixed and describe scene-sampling uncertainty. Training
+variation is assessed separately by changing a predictor's training seed. A positive interval
+does not establish that a gain will have the same size after retraining.
 
-The evaluator ignores the origin of a translation, so the coupling's +0.27245 is **+0.5449 on
-rotations** (95 % [+0.437, +0.653]) and **exactly zero on translations** in every leave-one-out fit.
-Every origin-side number in this document is a rotation-side number at half size.
+## Handles disambiguate hinge placement
 
-### The component ladder — every component measured at both ends
+The control fixes part masks, classes, scores, and axes, changing only the origin rule.
+Both configurations are produced by the release pipeline.
 
-The pipeline is not additive: the cleanup moves the box, the box moves the candidate edges, and
-edges only matter once a handle chooses among them. So each component is measured twice, added to
-the naive pipeline and dropped from the released one. Every arm is `scripts/infer_t1.py` on the
-released checkpoint with the flags shown; the naive pipeline is upstream's selection, no cleanup,
-centroid origins, no rescoring.
+| Origin rule | Part AP50 | + Axis | + Origin | + Axis & origin |
+|---|---:|---:|---:|---:|
+| Support centroid, no handle cue | 47.93 | 43.75 | 14.37 | 13.74 |
+| **Predicted-handle guidance** | 47.93 | 43.75 | **43.11** | **40.98** |
 
-| arm | flags | instances | AP50 | AP50_axis_origin |
-|---|---|---:|---:|---:|
-| naive | `--topk-rule cap --snap-largest-cc 0 --gamma 0` | 5556 | 0.4565821868864147 | 0.12240843946412548 |
-| naive + selection rule | `--snap-largest-cc 0 --gamma 0` | 6285 | 0.4619851117236487 | 0.12369270931045799 |
-| naive + cleanup | `--topk-rule cap --gamma 0` | 5556 | 0.4565821868864147 | 0.12127528556596077 |
-| naive + handles | `--topk-rule cap --snap-largest-cc 0 --gamma 0 --handles …` | 5556 | 0.4565821868864147 | 0.36032360431578153 |
-| naive + rescoring | `--topk-rule cap --snap-largest-cc 0` | 5556 | 0.4739021477843395 | 0.1372983194741269 |
-| **released** | `--handles …` (all defaults) | 6285 | **0.47929751799455056** | **0.4098392259468343** |
-| released − selection rule | `--topk-rule cap --handles …` | 5556 | 0.4739021477843395 | 0.40795340316077444 |
-| released − cleanup | `--snap-largest-cc 0 --handles …` | 6285 | 0.47929751799455056 | 0.38032246725540053 |
-| released − handles | (no `--handles`) | 6285 | 0.47929751799455056 | 0.1373870573931177 |
-| released − rescoring | `--gamma 0 --handles …` | 6285 | 0.4619851117236487 | 0.393859672655914 |
+Handle-guided selection gives **+27.25 pp** in motion-gated AP50, with a paired interval of
+**[+21.86, +32.63] pp**. Since mask and axis scores are unchanged, this isolates hinge placement
+rather than improved segmentation. The corresponding class breakdown is:
 
-| component | added to naive | dropped from released |
-|---|---:|---:|
-| per-query argmax selection | +0.0013 | +0.0019 |
-| largest-component cleanup before the fit | −0.0011 | +0.0295 |
-| handle-guided origins | +0.2379 | +0.2725 |
-| connectivity rescoring | +0.0149 | +0.0160 |
-| the whole decode (naive → released) | | +0.2874, 95 % [+0.2212, +0.3537] |
-
-The decode is worth +0.287 on the ranking column and +0.023 on AP50: almost all of this pipeline is
-motion decoding, which a mask-only metric cannot see. Cleanup and handles touch only geometry and
-move AP50 by exactly zero at both ends. The naive and released arms cover 248 ground-truth parts
-between them with bit-identical covering masks on 244, so AP50 sees the selection rule and the
-rescoring reorder the same instances, while the ranking column sees the origin (different on 184
-of the 248).
-
-### The selection rule alone
-
-`--topk-rule argmax` (released) against `--topk-rule cap` (upstream's global top-k), everything else
-released: AP50 +0.0054 [+0.0005, +0.0103], separated; ranking column +0.0019 [−0.0008, +0.0045],
-not separated. The rule is kept because it is free and its mask-level gain is real.
-
-### Sensitivity of the two hand-chosen constants
-
-AP50 is 0.47929751799455056 in every cell; only the ranking column moves.
-
-| handle gate (`--handle-max-dist`) | 0.25 m | **0.5 m** | 1.0 m |
+| Motion-gated AP50 | Rotation | Translation | Macro |
 |---|---:|---:|---:|
-| AP50_axis_origin | 0.40855 | **0.40984** | 0.40783 |
+| Centroid origins | 1.88 | 25.59 | 13.74 |
+| Handle-guided origins | 56.37 | 25.59 | 40.98 |
+| **Change (pp)** | **+54.49** | **0.00** | **+27.25** |
 
-| cleanup radius (`--snap-largest-cc`) | 0.025 m | **0.05 m** | 0.1 m |
+Only rotations benefit from this intervention because the metric omits the translation-origin
+test. The per-rotation gain has its own paired interval, [+43.71, +65.27] pp; the translation
+difference is identically zero in every omitted-scene comparison.
+
+## Parts complement dense handle detections
+
+The dense predictor supplies the initial handles. The joint predictor adds child proposals, and
+contextual correction then changes only the new proposals' classes.
+
+| Handle output | AP50 | Change from preceding row (pp) | Instances |
 |---|---:|---:|---:|
-| AP50_axis_origin | 0.40841 | **0.40984** | 0.40984 |
+| Dense detections | 24.63 | — | 342 |
+| + Joint predictor's proposals | 29.65 | +5.01 | 4,471 |
+| + Contextual label correction | **30.99** | +1.34 | 4,471 |
 
-The alternative rotation-axis rule `--axis-rule most_vertical` scores 0.41202 (+0.00218) on the
-released model; across training seeds the sign of that difference flips, so the two rules are not
-resolved and the release keeps the vertical prior.
+The **4,129 additional proposals** yield +5.01 pp, with a paired interval of
+**[+1.47, +8.56] pp**. In the measured matching analysis they preserve the dense detections'
+matching prefix and recover 53 additional ground-truth handles. Spatially permuted proposals and
+random size-matched masks return the dense-only score, supporting genuine localization rather
+than a benefit from merely appending more detections.
 
-### Where the released configuration fails
+This control establishes the value of the **implemented proposal source**. It does not isolate
+parent conditioning itself: the matched conditioning/readout study does not establish that
+conditioning alone is responsible for the gain. Query-index association is used throughout the
+released validation pipeline.
 
-Of the 390 ground-truth parts, 139 are not covered by any prediction at IoU 0.5 (50 rotations, 89
-translations — 58 % of translations against 21 % of rotations), 14 fail only the axis gate (12
-rotations with a non-vertical hinge, 2 translations), 14 fail only the origin gate (all rotations),
-and 223 (57.2 %) are scored. Coverage, not motion, is the translation story; the origin side is
-close to done — the best of the four candidate lines would add at most +0.027.
+### Which source supplies the corrected labels?
 
----
+Every row below uses the same uncorrected union, holding masks and scores fixed. The correction
+sources are alternatives, not successive stages.
 
-## Track 2 — interactable handles
+| Class-context source | Handle AP50 | Gain over the uncorrected union (pp) |
+|---|---:|---:|
+| None | 29.65 | — |
+| Standalone parts only | 30.63 | +0.98 |
+| Dense detections only | 30.66 | +1.01 |
+| **Parts with dense-detection fallback** | **30.99** | **+1.34** |
 
-### The chain
+The full rule relabels 885 child proposals and leaves dense detections unchanged. Its +1.34-pp
+reference gain has a paired interval of **[+0.37, +2.31] pp**. The parts-only and dense-only gains
+overlap and must not be added. The released script implements the full rule; the source-isolation
+experiments belong to the paper's additional analysis.
 
-| stage | AP50 | instances | |
+| Handle class | Before correction | After correction | Change (pp) |
+|---|---:|---:|---:|
+| Rotation | 48.56 | 48.54 | −0.02 |
+| Translation | 10.74 | 13.45 | +2.71 |
+
+The net benefit is concentrated on translation handles. The small rotation-handle change is
+unresolved under paired scene analysis; the rule should not be described as improving every class.
+
+## Stability of the coupling gains
+
+The following ranges change one predictor's training seed while keeping the other predictors
+fixed. They describe **paired gains within each model draw**, not the range of absolute AP.
+
+| Mechanism | Reference gain (pp) | Gain across training draws (pp) | Predictor varied |
 |---|---:|---:|---|
-| dense semantic model (`instances_t2.py`) | 0.24634765846937887 | 342 | R |
-| + proposals from the joint model appended below (`--union-child`) | 0.29649211039671153 | 4471 | R |
-| + class vote from Track 1's parts (`classvote.py`) | **0.3099074679392516** | 4471 | R |
+| Handle-guided hinges | +27.25 | +25.27 to +27.38 | Part model, 4 draws |
+| Appended child proposals | +5.01 | +3.94 to +5.01 | Joint model, 3 draws |
+| Contextual label correction | +1.34 | +0.19 to +1.34 | Joint model, 3 draws |
 
-**The appended proposals: +0.05014, 95 % [+0.0147, +0.0856]**, no carrier scene. The same 4129
-proposals with their locations permuted across scenes, or replaced by random blobs of the same
-sizes, return the no-proposal number 0.24634765846937887 to every digit: a detection that recovers
-no ground truth is a false positive below every true positive and adds no area. Fixing the
-association (below) is the joint model's contribution; conditioning its child head on the part was
-measured at −0.003 in a matched unconditioned comparison, sign undetermined.
+Handle guidance and proposal augmentation remain beneficial across these checks. Label correction
+is positive in the listed draws, but its repeated gains can be much smaller than the reference
+result. Its benefit is observed, not established as a seed-stable property of the method.
+The +1.34-pp value is a measured reference gain, not a guaranteed retraining gain.
+Seed ranges and scene intervals answer different questions and are not interchangeable.
 
-**The class vote: +0.01342, 95 % [+0.0037, +0.0231]**, 885 of 4129 proposals relabelled. Per class
-it is +0.02707 on translation handles (0.10740 → 0.13447, 95 % [+0.008, +0.046]) and −0.00024 on
-rotation handles (0.48559 → 0.48535, [−0.0015, +0.0010]): its job is fixing labels on drawer pulls.
-With the parts as the only voting source the gain is +0.0098; the dense instances alone give
-+0.0102; the two overlap. On the 1463 proposals the evaluator can score, the vote breaks no correct
-label, fixes 453 of 527 wrong ones and leaves 74 unreached; it also relabels 432 proposals that
-match no ground truth, which the score cannot see. Across three training seeds of the joint model
-the append gain stays at +0.039 to +0.050 while the vote gain ranges +0.002 to +0.013, so the vote
-is reported as observed, not claimed as a property of the method.
+## Understanding the motion decoder
 
-### The dense-instance floor, a choice with its price
+### Geometric components interact
 
-`--min-points 3` is chosen for coverage: 17.9 % of interactable instances have fewer than 10 points.
-`--min-points 10` scores 0.3246549753004043 on the union (+0.0282, 95 % [−0.0035, +0.0598], not
-separated) by removing 105 of the 342 dense instances — 96 covering no ground truth, 9 covering
-one — and with them the only cover of 7 handles. The release keeps 3.
+A simple baseline uses stock query selection, uncleaned fitting support, centroid origins, and
+no connectivity rescoring. It obtains 45.66 part AP50 and 12.24 motion-gated AP50. The full
+configuration reaches 47.93 and 40.98, respectively.
 
-### The released dense model among its training family
+Each component is evaluated in two contexts: added alone to the baseline, and removed from the
+full configuration. The right column reports **full minus ablated** motion AP, so a positive
+number is the cost of removal.
 
-Five dense models were trained on the training split; all five run through the released chain with
-the same proposals and the same parts (`configs/arti3d/`: the base recipe, its 400-epoch variant,
-no curriculum, background weight 0.3, a second seed of the base):
+| Component | Added to the baseline (pp) | Removed from the full system (pp) |
+|---|---:|---:|
+| Per-query class selection | +0.13 | +0.19 |
+| Largest-component fitting support | −0.11 | +2.95 |
+| Handle-guided origins | +23.79 | +27.25 |
+| Connectivity rescoring | +1.49 | +1.60 |
 
-| member | dense model | + proposals | + class vote |
+Support cleanup is useful in combination with hinge selection: it changes the box whose candidate
+lines are selected by the handle. Its negative standalone result and positive removal cost show
+why component effects cannot be added. Cleanup and handle guidance change geometry, not masks.
+The [method guide](METHOD.md#running-the-pipeline) lists the released controls and their flags.
+
+### Comparison with learned decoding on frozen inputs
+
+The paper additionally compares motion heads on the same frozen part masks, classes, scores,
+and features. All rows below have access to the predicted handle cue and have part AP50 47.93.
+Learned-head values are ranges over three head-training seeds, not confidence intervals.
+
+| Decoder | Motion-gated AP50 |
+|---|---:|
+| Continuous motion regression | 29.61–31.30 |
+| Learned axis/hinge selection, box axes and vertical prior | 37.27–38.63 |
+| Learned axis/hinge selection, box axes only | 37.11–38.78 |
+| Fixed rule axes, learned hinge selection | 37.69–39.36 |
+| **Training-free geometric decoder** | **40.98** |
+
+The rule is effective without motion-regression training. These point estimates do **not**
+establish general superiority over learned articulation: the comparison concerns frozen-feature
+decoding, and paired intervals for the closest head comparisons include zero. These experimental
+heads and their training harness are not included in this release.
+
+## Remaining failure modes
+
+The validation set contains 390 ground-truth parts: 236 rotational and 154 translational.
+A coverage-first analysis assigns each part to the first applicable failure below, so these
+counts form a partition rather than independent, additive error estimates.
+
+| Outcome | Rotation | Translation | Total |
 |---|---:|---:|---:|
-| `armA_r1` (base, 200 epochs) | 0.24419433753787376 | 0.28964084379094157 | 0.3037153005073384 |
-| **`armA_long` (400 epochs) — released** | **0.24634765846937887** | **0.29649211039671153** | **0.3099074679392516** |
-| `armA_noc2f` | 0.24298559066468342 | 0.29260264684662357 | 0.30599230759641377 |
-| `armA_seed2` | 0.23976661668599863 | 0.28377763255052746 | 0.29696429562048565 |
-| `armA_bgw03` | 0.24526803111330406 | 0.29465881092905916 | 0.3093244363393815 |
+| No predicted mask matches at IoU > 0.5 | 50 | 89 | 139 |
+| Covered, but fails the axis gate | 12 | 2 | 14 |
+| Passes the preceding checks, but fails the origin gate | 14 | 0 | 14 |
+| Passes all checks | 160 | 63 | 223 |
+| **Ground-truth total** | **236** | **154** | **390** |
 
-The released member leads at every stage, by 0.00058 over the runner-up after the vote — while
-`armA_r1` and `armA_seed2`, the same configuration differing only in the seed, are 0.00675 apart.
-The selection is therefore not resolved by the evidence, and any of the top three would be a
-defensible release; the table is published so a reader can see that. The append gain is +0.044 to
-+0.050 on every member.
+Missing masks are the largest remaining source of failure, especially for translations; a hinge
+selector cannot repair an undetected part. The 12 covered rotation-axis failures expose the
+vertical prior's limitation on non-vertical hinges. For handles, missed small regions and
+oversized masks remain localization errors that class correction cannot resolve.
 
-### The proposal association
+This is an instance-coverage diagnostic, **not** an AP decomposition: AP also depends on false
+positives, ranking, and matching. The geometric assumptions are summarized in
+[Method: Assumptions and limits](METHOD.md#assumptions-and-limits).
 
-`child_prob` is emitted per query while the instance head emits a reordered, filtered subset, so a
-proposal must be fetched by the query index its parent came from. Measured on the `armA_r1` field
-(`infer_s2_child.py --association position` reproduces the alternative):
+## Reproduce the reference results
 
-| association | proposals | ≥ 90 % inside its own part | class = matched handle's | + proposals AP50 | + class vote |
-|---|---:|---:|---:|---:|---:|
-| by output position | 3317 | 7.7 % | 54.8 % | 0.27720366232298227 | 0.2918250868800495 |
-| **by query index (released)** | 4129 | 54.6 % | 63.1 % | **0.28964084379094157** | **0.3037153005073384** |
+After following [setup](../README.md#quick-start), [data preparation](DATA.md), and
+[checkpoint download](../checkpoints/README.md), run from the repository root:
 
-+0.0124 at the union stage and +0.0119 after the vote. Of the 1691 proposal masks the two share,
-1688 are scored differently (a proposal inherits its parent's score), so the association is a
-re-ranking rather than a re-detection; a misassociated proposal is still a handle in the right
-room, which is why the positional union still gains. All numbers in this repository use the
-query-index association; our competition entry used the positional one.
+```bash
+DATA_ROOT=data/pointcept_mov \
+LITE_ROOT=data/pointcept_lite \
+ARTI3D_GT_ROOT=data/a3d/processed \
+OUT=runs/reproduce_val \
+  bash scripts/reproduce_val.sh
+```
 
----
+The script produces the two motion configurations and all three handle stages shown in the main
+controls. It saves complete precision in each `metrics.json` and prints a rounded summary.
 
-## Reproducibility
+<details>
+<summary>Full-precision reference metrics</summary>
 
-**Against the original research code, on the same GPU:**
+| Output directory | Metric key | Value in saved JSON |
+|---|---|---:|
+| `t1_centroid/` | `MO_ap50` | 0.14373294936305364 |
+| `t1_centroid/` | `MAO_ST_ap50` | 0.1373870573931177 |
+| `t1/` | `AP50` | 0.47929751799455056 |
+| `t1/` | `MA_ap50` | 0.43747368928511543 |
+| `t1/` | `MO_ap50` | 0.431147838595354 |
+| `t1/` | `MAO_ST_ap50` | 0.4098392259468343 |
+| `t2_single/` | `AP50` | 0.24634765846937887 |
+| `t2_union/` | `AP50` | 0.29649211039671153 |
+| `t2_voted/` | `AP50` | 0.3099074679392516 |
 
-| stage | masks | axes / origins | scores |
-|---|---|---|---|
-| Track 1 | bit-identical 6285 / 6285 | bit-identical 6285 / 6285 | 1222 / 6285 identical, max Δ 2.06·10⁻⁵ |
-| Track 2 dense | probability fields bit-identical 42 / 42 | — | — |
-| joint model proposals | bit-identical 3317 / 3317 | — | 597 / 3317 identical, max Δ 5.90·10⁻⁶ |
+</details>
 
-The score residuals are not a property of the rewrite: two runs of the *same* code on the same GPU
-differ by the same amount (Track 1 max Δ 2.06·10⁻⁵; proposals 2.17·10⁻⁵) because the instance head
-uses non-deterministic reductions, and a perturbation of that size reorders no ranking — two runs
-give identical metrics to the last digit in every column.
+These are reference outputs, not a promise of bit-identical behavior across GPU architectures or
+software builds. Thresholded masks, floating-point reductions, and component connectivity can
+make small numerical differences affect the final metrics. Keep the released precision, query
+association, preprocessing, and checkpoint settings when comparing results.
 
-**Across hardware.** Against a Track-1 artifact produced during the competition on an RTX 5090
-(AP50 0.47930101442199596, AP50_axis_origin 0.4149497069549261 with that artifact's handle field),
-this code reproduces the ranking column to 4·10⁻⁶: nine of 6285 masks flip by whole superpoints at
-the per-superpoint threshold. The stored float16 probability fields from that machine differ from
-this machine's at a median of exactly one float16 ULP (2.44·10⁻⁴), which moves the dense-instance
-count by one and AP50 by 1.5·10⁻⁴ before the union and 1.6·10⁻³ after it. Neither artifact feeds any
-table above.
+The source-isolation controls, paired jackknife, multi-seed studies, learned-head comparisons,
+and failure census above summarize the paper's research experiments. They are **not all rerun by
+`reproduce_val.sh`**, and their dedicated research harnesses are not bundled in this repository.
+The public release covers the reference inference pipeline, its no-handle control, and the
+training recipes for its three predictors.
 
-**Runtime** (batch 1, median over validation scenes, `torch.cuda.synchronize()` around every
-measurement): dense model 0.178 s per scene at 4.53 GiB peak; part model 0.225 s at 4.60 GiB, of
-which the query decoder is 0.014 s; the geometric motion decode 0.391 s on the CPU with no GPU at
-all. The slowest stage is per-instance Python with a KD-tree per mask — an implementation fact,
-and the obvious place to spend effort if latency ever matters.
+## Challenge context
 
-## Scope
-
-Every number here is a validation result of the released, train-only configuration. Our
-competition entry, built on this method, placed first on both tracks of the Articulate3D challenge
-test set; it included additional engineering that is not part of this release.
+Our challenge entry achieved first place for both outputs, with **48.28 motion-gated part AP50**
+and **34.46 handle AP50** on the hidden test set. These are the standings recorded on
+September 6, 2026; see the
+[official leaderboard](https://art3d-challenge.mooo.com/web/challenges/challenge-page/1/leaderboard/).
+The entry used additional engineering and differs from the released validation configuration.
+There are no test-set component studies in this guide.

@@ -1,246 +1,309 @@
-# Method
+# Method and implementation
 
-Two tasks over the same indoor scans: **movable parts with their motion** (Track 1) and
-**interactable handles** (Track 2). Learned predictors find the broad part surfaces and the small
-handles; the motion of a part is then *decoded* from its geometry and its handle rather than
-regressed by a learned head; and the two tasks feed each other exactly once each, in one direction
-at a time. The three trained networks share an architecture family but not weights.
+[Overview](../README.md) · [Data](DATA.md) · [Validation results](RESULTS_VAL.md) · [Checkpoints](../checkpoints/README.md)
 
-## Information flow
+Segment–Snap treats movable parts, motion, and handles as one interaction-understanding problem.
+Large surfaces provide geometric structure; small handles provide an interaction cue that the
+surface alone can leave ambiguous. The pipeline combines three learned predictors with a
+training-free motion decoder and a one-pass contextual correction of handle labels.
 
+## Three predictors, three responsibilities
+
+All predictors receive the same aligned scene, with coordinates, RGB, and normals. They share
+an architecture family, **not weights**: each is trained separately from a Volt-B initialization.
+
+| Predictor | Representation and output | Role in the final result |
+|---|---|---|
+| Movable-part predictor | SPFormer queries over superpoints; part masks, classes, and scores | Supplies the final part instances and semantic context for handle correction |
+| Dense handle predictor | Pointwise probabilities for background, rotation handles, and translation handles | Supplies the initial handles and the handle locations used by motion decoding |
+| Joint part-handle predictor | Its own part queries, each with a fine-resolution child-handle mask | Supplies complementary handle proposals, initially labeled by their parent query |
+
+A handle's rotation/translation label describes **the motion of the part it operates**, not a
+separate motion estimate for the handle itself.
+
+### How the joint predictor works
+
+The joint model first builds part-query features by attending to the scene's superpoint features.
+Its part head predicts parent masks and classes. A child head uses each of those **same query
+features**, together with the backbone's finer voxel features, to predict a handle mask that is
+mapped back to the original points. Both heads belong to one forward pass.
+
+Thus the child head is conditioned on a parent **query feature**; it does not take a saved parent
+mask as a second network input. Nor does it consume the standalone part predictor's output. The
+joint model has its own parent predictions, used to identify, label, and score child proposals;
+the standalone model supplies the final parts and the later contextual label correction.
+
+### Information flow
+
+```mermaid
+flowchart TB
+    X["Aligned RGB scene point cloud"]
+    P["Movable-part predictor"]
+    D["Dense handle predictor"]
+    J["Joint part-handle predictor"]
+    H["Dense handle instances"]
+    G["Training-free geometric decoder"]
+    U["Append child-handle proposals"]
+    V["Contextual label correction"]
+    O["Parts with motion axes and origins"]
+    F["Final handle instances"]
+
+    X --> P
+    X --> D
+    X --> J
+    D --> H
+    P -->|"Part masks and classes"| G
+    H -->|"Handle locations select hinges"| G
+    G --> O
+    H -->|"Keep dense detections"| U
+    J -->|"Child masks, classes, scores"| U
+    U --> V
+    O -->|"Containing-part class and confidence"| V
+    H -->|"Fallback class evidence"| V
+    V --> F
 ```
-                 ┌─ Track-2 dense model ─► per-point probabilities ─► connected components ─► dense handle instances ─┐
-                 │                                   │                                                                │
-  scene ─────────┤                                   └─► handle centroids ─► hinge origins ─┐                         │ union: proposals
-                 │                                                                          │                         │ appended below
-                 ├─ Track-1 part model ─► part masks + classes ─► geometric motion decode ──┴─► PARTS + MOTION        │
-                 │                                                        │  parts vote on the proposals' classes     ▼
-                 └─ joint model (parts + child head) ─► handle proposals ─┼──────────────────────────────────────► class vote ─► HANDLES
-                                                                          └───────────────────────────────────────────┘
+
+The two directions use different information: **handles guide hinge geometry; parts guide handle
+proposals and labels**. No arrow returns from the final handles to the motion decoder. The graph
+is acyclic, and the three learned predictors can be evaluated independently before their outputs
+are combined.
+
+The source filenames retain `t1`, `t2`, and `s2` for compatibility with the original implementation:
+these denote the part branch, dense handle branch, and joint proposal branch, respectively.
+They are not three independent tasks in the method.
+
+## From parts and handles to motion
+
+### Segment the part surface
+
+The part predictor uses a Volt-B backbone and a 200-query SPFormer decoder. Queries operate on
+Felzenszwalb–Huttenlocher superpoints built from a 12-nearest-neighbor graph
+(`k_thresh=0.005`, `seg_min=5`). This representation groups broad surfaces while retaining
+boundaries needed by the part decoder.
+
+The released selection rule assigns each query its highest-scoring motion class once, instead of
+selecting globally from the flattened query-by-class grid. Instances smaller than four points
+are discarded. See [per-query selection](../arti3d/models/spformer_argmax.py).
+
+### Fit geometry to reliable support
+
+For each retained part, take its largest connected component at a radius of 0.05 m as the fitting
+support. **This changes the points used for fitting, not the output instance mask.** PCA estimates
+the thin direction; a minimum-area rectangle over the projected convex hull supplies the in-plane
+box axes. The support-point mean is used as the box centroid.
+
+The box provides the following motion candidates:
+
+| Part class | Axis rule | Origin rule |
+|---|---|---|
+| Rotation | Fixed world-Z direction: an upright-hinge prior | Handle-guided selection among four box-derived candidate hinge lines |
+| Translation | Fitted surface normal: a per-part direction | Support centroid; translation origins are not constrained by the evaluator |
+
+For a rotating part, the four candidate lines lie on **two physical sides**, each represented
+across the plate thickness. Their direction is the chosen rotation axis.
+
+### Use a handle to choose the hinge side
+
+Dense probabilities are converted into handle instances using the same clustering rule as the
+handle-output branch. For each handle centroid, measure its distance to the nearest point in the
+part's fitting support. Select the closest handle if this distance is less than 0.5 m.
+
+Among the candidate hinge lines, choose the one farthest from that handle. For example, a handle
+on the right side of a cabinet door favors a hinge on the left. The emitted origin is the
+perpendicular projection of the support centroid onto that line: a representative point on the
+hinge, rather than a distinguished endpoint. If no nearby handle exists, use the support centroid.
+
+Box fitting, axis selection, and hinge selection have **no learned parameters and no
+motion-regression training**. They are implemented in [geometric decoding](../arti3d/geom/snap.py)
+and [box fitting](../arti3d/geom/obb.py).
+
+### Rescore fragmented instances
+
+Multiply each part confidence by the fraction of its points in the largest connected component,
+raised to a power `gamma` (released value: 1). This changes ranking, not masks or motion geometry.
+See [connectivity rescoring](../arti3d/geom/rescore.py).
+
+The [fixed-mask validation control](RESULTS_VAL.md#handles-disambiguate-hinge-placement) isolates
+the handle cue: motion-gated AP50 rises from 13.74 to 40.98 without changing masks or axes.
+
+## From part context to handles
+
+### Retain fine-scale dense detections
+
+The dense predictor classifies points rather than pooling handle targets into superpoints.
+Foreground points are grouped into connected components at 0.025 m; components with fewer than
+three points are removed. Each instance receives its points' majority motion class and mean
+probability score. See [component extraction](../arti3d/prep/cluster.py).
+
+### Add complementary child proposals
+
+The joint predictor thresholds each child-handle probability mask at 0.30 and keeps nonempty
+masks. Proposals inherit their parent query's class and confidence. They are not clipped to the
+predicted parent mask, so a boundary error in the parent does not automatically remove a handle.
+
+**Preserve query identity.** The part decoder filters and reorders queries during selection and
+NMS. The child mask must be retrieved using the original query index, not the parent's position
+in the returned instance array. The [query-tracking adapter](../arti3d/models/spformer_qtrack.py)
+preserves this correspondence.
+
+Append child detections at `0.05 × parent score`; keep all dense masks, classes, and scores intact.
+The union script asserts that child scores are below dense scores **within each scene**. This is
+not a universal guarantee that adding proposals improves dataset-level AP: the benefit is
+measured by the [proposal control](RESULTS_VAL.md#parts-complement-dense-handle-detections).
+
+### Correct only the new proposals' labels
+
+For each appended child proposal:
+
+1. Use the standalone part predictions after connectivity rescoring. Find parts with score at
+   least 0.1 that contain at least 90% of the child's points. Select the highest-scoring one.
+   If its score is at least 0.3 and its class
+   differs from the child's, adopt that class.
+2. If no differing part label was accepted, use the class of the dense detection that contains
+   the largest fraction of the child, provided that fraction is at least 90%.
+3. Otherwise keep the child's original class.
+
+The second step can run even when a qualifying part agrees with the child's original label:
+this is the implemented fallback policy. Only child **classes** can change. Their masks and
+scores, and every dense detection, remain untouched. See [contextual correction](../scripts/classvote.py).
+
+The released chain gains +5.01 pp from proposals and then +1.34 pp from label correction.
+The latter includes dense-handle fallback, not just part context. Parts-only correction gives
++0.98 pp relative to the same uncorrected union. The full correction gain varies across child-model
+seeds; conditioning alone is not established as the cause of the proposal gain.
+
+## Running the pipeline
+
+Complete [setup](../README.md#quick-start), [data preparation](DATA.md), and
+[checkpoint download](../checkpoints/README.md) first. From the repository root:
+
+```bash
+DATA_ROOT=data/pointcept_mov \
+LITE_ROOT=data/pointcept_lite \
+ARTI3D_GT_ROOT=data/a3d/processed \
+OUT=runs/reproduce_val \
+  bash scripts/reproduce_val.sh
 ```
 
-`scripts/reproduce_val.sh` runs the six stages in the only order that satisfies this graph:
+The reproduction script uses one valid sequential schedule for the dependency graph. Paths below
+are relative to its output directory.
 
-| stage | script | reads | writes |
+| Stage | Entrypoint | Reads | Writes |
 |---|---|---|---|
-| 1 | `infer_t2_sem.py` | the Track-2 checkpoint | per-point handle probabilities, one `<sid>_prob.npy` per scene |
-| 2 | `instances_t2.py` | stage 1 | dense handle instances — **also Track 1's hinge cue** |
-| 3 | `infer_t1.py --handles <stage 1>` | the Track-1 checkpoint, stage 1 | part masks, classes, scores, axes, origins |
-| 4 | `infer_s2_child.py` | the joint checkpoint | handle proposals, one set per predicted part |
-| 5 | `instances_t2.py --union-child <stage 4>` | stages 1 and 4 | the dense instances with the proposals appended below |
-| 6 | `classvote.py --t1 <stage 3>` | stages 3 and 5 | the proposals relabelled by the parts that contain them |
+| Dense probabilities | [`infer_t2_sem.py`](../scripts/infer_t2_sem.py) | Dense checkpoint and handle-view scene inputs | `t2_probs/<sid>_prob.npy` |
+| Dense instances | [`instances_t2.py`](../scripts/instances_t2.py) | Probabilities and original point coordinates | `t2_single/t2_validation_preds.pkl` |
+| Parts and motion | [`infer_t1.py`](../scripts/infer_t1.py) | Part checkpoint, part-view inputs, and `--handles t2_probs/` | `t1/t1_validation_preds.pkl` |
+| No-handle control | `infer_t1.py`, without `--handles` | Same part checkpoint and scene inputs | `t1_centroid/t1_validation_preds.pkl` |
+| Child proposals | [`infer_s2_child.py`](../scripts/infer_s2_child.py) | Joint checkpoint and both input views | `child.pkl` |
+| Handle union | `instances_t2.py --union-child` | Dense probabilities and child proposals | `t2_union/t2_validation_preds.pkl` |
+| Label correction | [`classvote.py`](../scripts/classvote.py) | Union predictions and final standalone parts | `t2_voted/t2_validation_voted_preds.pkl` |
 
-The handles Track 1 consumes come from stage 2, before the union and the vote exist, so nothing
-flows back: one pass in each direction, no cycle.
+`infer_t1.py --handles` reads the **probability directory**, not the dense-instance pickle:
+it reconstructs the same handle components internally. The final handle union is never an
+input to this decoder in the released pipeline. `metrics.json` is written beside the evaluated
+part and handle prediction files; full AP values are fractions in [0, 1].
 
----
+Each scene's final prediction dictionary stores `pred_masks` as `(N_points, N_instances)`, with
+`pred_classes` and `pred_scores` indexed by instance. Parts additionally have `pred_axises`
+(the serialized field's spelling) and `pred_origins`, both shaped `(N_instances, 3)`.
+The handle union records `is_child` to limit relabeling to appended proposals. Child inference
+writes a wrapper containing `preds` and `meta`, which the union script accepts directly.
 
-## Track 1 — parts, then motion by geometric decoding
+Use a fresh output directory for a new experiment. Checkpoints and pickle predictions should be
+loaded only from trusted sources.
 
-### 1. Part segmentation
+<details>
+<summary>Released inference settings and controls</summary>
 
-A Volt-B backbone (pretrained on ScanNet++) with an SPFormer decoder: 200 learned queries attending
-over superpoints, two classes {rotation, translation}. Superpoints are a Felzenszwalb–Huttenlocher
-segmentation of a 12-nearest-neighbour graph (`k_thresh` 0.005, `seg_min` 5), chosen by a sweep
-for the achievable ceiling on movable parts rather than left at the library default: a superpoint
-that straddles a part boundary caps what any decoder above it can recover.
-
-**Selection is per-query argmax, not a global top-k.** Upstream flattens the (query × class) grid
-and takes one top-k over it, so a confident query can occupy two output slots with both class
-hypotheses over the same mask while a weaker query gets none. Taking each query's best class once
-emits 6285 instances on validation against 5556 under the stock rule, and is worth +0.0054 AP50
-(`arti3d/models/spformer_argmax.py`; `--topk-rule cap` restores upstream's rule).
-
-### 2. Support before the fit
-
-The box is fitted to the mask's **largest connected component at 5 cm**, not to the whole mask —
-and **the submitted mask is not modified**. Instance masks carry no connectivity constraint, so a
-handful of stray points across the room inflates the box and relocates every quantity derived from
-it. Alone the cleanup does nothing (−0.0011 on the ranking column); in place, once something chooses
-among the box's edges, it is worth +0.0295 (`docs/RESULTS_VAL.md`, the component ladder).
-
-### 3. The box
-
-PCA gives the plane normal; the in-plane axes come from the **minimum-area rectangle** over the
-convex hull of the support points (rotating calipers), not from PCA — PCA's in-plane orientation
-follows the point distribution rather than the shape and reproduces the annotation box far less
-often (62.8 % vs 75.8 % axis coverage on ground-truth masks). The centre is the support-point mean.
-
-### 4. The axis — a prior for rotations, geometry for translations
-
-* A **translation** slides along the part's own **fitted plane normal**: a per-part quantity
-  (2100 distinct values over the 2808 predicted translations).
-* A **rotation** hinges about **a fixed vertical direction (world Z)**: a dataset-level prior, the
-  same vector for all 3477 predicted rotations. On validation it passes the metric's 15° gate on
-  93.6 % of matched rotations; the plane normal passes on 94.2 % of matched translations.
-
-`--axis-rule most_vertical` selects the box axis nearest vertical per part instead. It disagrees
-with the constant by more than the 15° gate on 17.9 % of predicted rotations, scores +0.002 higher
-on the released model and the sign of that difference flips across training seeds, so the two rules
-are not resolved; the prior's total cost is 12 ground-truth rotations whose axis is more than 15°
-from vertical and which fail the axis gate for that reason.
-
-### 5. The hinge — the handle picks a side
-
-Four candidate lines run parallel to the axis through the box corners. Geometrically they are
-**two physical sides of the part, each duplicated across the plate thickness**: within a pair the
-lines are 0.08 m apart at the median, under the metric's 0.25 m origin tolerance, while the pairs
-are 0.63 m apart. The rule chooses the line **farthest from the part's predicted handle** and places
-the origin at the perpendicular foot of the box centroid on it — a representative point on the
-hinge line, which is what the evaluator's point-to-line criterion measures. The handle is the
-nearest dense handle instance (stage 2) within 0.5 m of the part; with none that close, the origin
-falls back to the box centroid (the control in `reproduce_val.sh`, stage 3b, applies the fallback
-to every part). Translations get the centroid: the metric ignores their origin.
-
-On validation the four candidates contain a passing origin for 94.4 % of matched rotations and the
-rule picks it on 83.4 %; the rule takes the right *side* on 88.9 % of matched rotations, and which of
-the pair's two lines it takes is decided by plate thickness, which the metric does not score.
-
-### 6. Connectivity rescoring
-
-`score × f^γ` with `f` the mask's largest-component fraction at 5 cm and γ = 1. Fragmented masks are
-usually spurious, and average precision integrates the whole ranking, so demoting them cleans it
-without deleting anything. Masks, axes and origins are untouched. Worth +0.016 on the ranking
-column; the optimum in γ is interior and shallow (`arti3d/geom/rescore.py`).
-
-### Constants (Track 1)
-
-| what | value | flag in `scripts/infer_t1.py` |
+| Setting | Default | Entrypoint / flag |
 |---|---|---|
-| instance selection | per-query argmax | `--topk-rule argmax` |
-| smallest emitted part | 4 points | `--min-points 4` |
-| cleanup radius before the fit | 0.05 m | `--snap-largest-cc 0.05` (0 disables) |
-| axis rule | world Z for rotations, plane normal for translations | `--axis-rule canonical` |
-| handle instances | components at 0.025 m, ≥ 3 points (as in Track 2) | `--handle-radius 0.025 --handle-min-points 3` |
-| handle gate | nearest handle within 0.5 m | `--handle-max-dist 0.5` |
-| origin rule | line farthest from the handle; centroid without a handle | (fixed) |
-| rescoring | γ = 1, components at 0.05 m, masks over 20 000 points subsampled with a fixed seed | `--gamma 1.0 --cc-radius 0.05` |
+| Part selection | Per-query argmax | `infer_t1.py --topk-rule argmax` |
+| Smallest part | 4 points | `infer_t1.py --min-points 4` |
+| Fitting-support radius | 0.05 m | `infer_t1.py --snap-largest-cc 0.05` |
+| Axis rule | Vertical rotations; surface-normal translations | `infer_t1.py --axis-rule canonical` |
+| Handle association gate | 0.5 m | `infer_t1.py --handle-max-dist 0.5` |
+| Part rescoring | Power 1, radius 0.05 m | `infer_t1.py --gamma 1 --cc-radius 0.05` |
+| Dense component radius | 0.025 m | `instances_t2.py --radius 0.025` |
+| Smallest dense handle | 3 points | `instances_t2.py --min-points 3` |
+| Child mask threshold | 0.30 | `infer_s2_child.py --thr 0.30` |
+| Child association | Original query index | `infer_s2_child.py --association query` |
+| Child score scale | 0.05 | `instances_t2.py --union-scale 0.05` |
+| Part voting score | 0.3 | `classvote.py --part-score 0.3` |
 
-The two hand-chosen constants sit at a measured optimum or plateau: the handle gate at 0.25 / 0.5 /
-1.0 m gives 0.40855 / 0.40984 / 0.40783, the cleanup radius at 0.025 / 0.05 / 0.1 m gives
-0.40841 / 0.40984 / 0.40984 (`docs/RESULTS_VAL.md`).
+The motion branch's handle extraction defaults to the same radius and size floor via
+`--handle-radius 0.025 --handle-min-points 3`. Its fitting-support cleanup can be disabled with
+`--snap-largest-cc 0`; rescoring can be disabled with `--gamma 0`.
 
----
+</details>
 
-## Track 2 — handles, then two more sources of evidence
-
-### 1. The dense model
-
-Point-level 3-class semantic segmentation on a Volt-B backbone: {background, rotation-handle,
-translation-handle}, where a handle's class is its parent part's motion type. **No queries and no
-superpoints on this track, deliberately**: handles are 16–21 points, a query decoder loses badly at
-that size, and superpoint pooling empties about a fifth of the handle targets outright. Training
-uses a coarse-to-fine label curriculum (targets dilated to 0.10 m for the first half of training,
-0.04 m until 80 %, raw labels for the last 20 %, so that the model is never evaluated on targets
-fatter than the ones it last saw). The curriculum is part of the released recipe and not a claim:
-in a same-seed comparison at the shipped length it moved the dense model by +0.008, inside
-scene-sampling noise.
-
-### 2. Instances
-
-Connected components at **2.5 cm** of the foreground argmax (2.0 cm shatters handles, 3.0 cm merges
-neighbours), class by majority vote, score the **mean per-point probability** — which is why stage 1
-saves probabilities rather than labels. Components under **3 points** are dropped. Three is a
-coverage choice, not an AP optimum: 17.9 % of interactable instances have fewer than 10 points, and
-a floor of 10 scores +0.028 higher on validation by discarding 105 mostly-false detections along with
-seven handles that had no other cover (`docs/RESULTS_VAL.md`). The floor acts on the dense instances
-only.
-
-### 3. Handle proposals from the joint model, appended below
-
-The joint model (`S2` in the code, after the second training stage) has Track 1's backbone and
-decoder plus a per-point **child head**: for each part query it predicts which points are that
-part's handle. This is a second source of handle detections produced by a different mechanism, and
-the two sources fail in different places. Fixed settings, each with its reason:
-
-* child probability threshold 0.30; inference in fp32, because a thresholded head flips instances
-  under half precision;
-* a proposal's score is its **parent query's score** (measured over the whole part), not the
-  child's own mean probability (a product of sigmoids over a handful of points);
-* proposals are not clipped to the parent mask — the proposal exists to be tighter than the part;
-* no minimum size beyond one point;
-* **association by query index**: `child_prob` is emitted per query while the instance head emits
-  a reordered, filtered subset, so a proposal is fetched by the query index its parent came from,
-  tracked through top-k and NMS (`arti3d/models/spformer_qtrack.py`). Fetched by output position
-  instead, only 7.7 % of proposals lie inside their own part (54.6 % by query index) and their class
-  agreement with the matched handle falls to chance.
-
-The proposals are **appended strictly below every dense instance of the scene** at score
-`0.05 × parent score` rather than merged into the ranking: a product of sigmoids and a mean
-probability are not on a common scale, so only their relative position is meaningful. Average
-precision integrates the whole ranking, so tail detections that recover missed handles add area
-while the head of the ranking is undisturbed. The strictly-below property is asserted on the
-assembled predictions; the gain is flat for every scale in [0.05, 0.5] and the script refuses 1.0,
-where a proposal could outrank a dense instance.
-
-### 4. The class vote — Track 1's parts correct the proposals' labels
-
-A handle's class is its parent part's motion type, so a handle inside a predicted drawer is a
-translation handle whatever the dense model called it. For each proposal:
-
-1. among Track-1 parts (score ≥ 0.1) containing ≥ 90 % of its points, take the highest-scoring; if
-   that part's score is ≥ 0.3 and its class differs, adopt the part's class;
-2. otherwise, if the dense instance that best contains it holds ≥ 90 % of its points and its class
-   differs, adopt that class.
-
-**Only proposals are relabelled; dense instances never are.** Masks and scores are untouched, so
-the only thing that moves is which class each proposal is matched against — exactly the quantity
-the rule claims to fix. On the released outputs the vote relabels 885 of 4129 proposals.
-
-### Constants (Track 2)
-
-| what | value | flag |
-|---|---|---|
-| component radius | 0.025 m | `instances_t2.py --radius 0.025` |
-| smallest dense instance | 3 points | `instances_t2.py --min-points 3` |
-| child probability threshold | 0.30 | `infer_s2_child.py --thr 0.30` |
-| proposal association | by query index | `infer_s2_child.py --association query` |
-| append scale | 0.05 × parent score | `instances_t2.py --union-scale 0.05` |
-| vote: containment / part score | 0.9 / 0.3 (parts under 0.1 never vote) | `classvote.py --part-score 0.3` |
-
----
-
-## The coupling, as implemented
-
-* **Handles → parts** (stage 2 → 3): the dense model's handle instances choose the hinge line. With
-  masks and axes fixed, origins at the handle-chosen line score 0.40984 on the ranking column
-  against 0.13739 at the box centroid: +0.272, or ×2.98 over the no-handle baseline. The absolute
-  figure is the transferable one — on ground-truth masks the same handles are worth +0.290 while
-  the ratio falls to ×1.53, so the ratio mostly measures how weak the no-handle baseline is.
-* **Parts → handles** (stage 3 → 6, with the proposals from stage 4): +0.050 AP50 from the
-  appended proposals and +0.013 from the vote. The proposals' contribution comes from the
-  association, not from conditioning the child head on the part (a matched unconditioned branch
-  measured −0.003, sign undetermined); of the vote's +0.013, the share carried by the parts alone
-  is +0.010.
-* **Independent in effect.** Switching handles off and on while switching the vote off and on
-  moves Track 1 only with the handles and Track 2 only with the vote; the interaction is exactly
-  zero (the vote computed from the no-handle arm is bit-identical).
-* **No second pass.** Feeding the final handle set back into stage 3 was measured at +0.007 on the
-  ranking column, inside scene-sampling noise; the release keeps one pass each way.
-
----
+**Known command-line issue:** in the current code, `infer_s2_child.py --help` fails while
+formatting an unescaped percent sign in an argument description. The settings table above and
+the [entrypoint source](../scripts/infer_s2_child.py) document its interface. This is a help-text
+formatting error; the documentation update does not modify the inference implementation.
 
 ## Training
 
-The Volt-B backbone weights (`weights/volt-base-scannetpp.pth`, from the upstream Volt release)
-initialise all three models; the scenes are ScanNet++ scenes, so the pretraining distribution is
-the evaluation distribution. Each model trains on the 195 training scenes for 400 epochs with AdamW
-(lr 3·10⁻⁴, one-cycle schedule, batch 2, mixed precision, EMA weights) through Volt's trainer, from
-the configuration in `configs/arti3d/`; the three shipped `checkpoints/*/config.py` are those
-configurations with the seed the run actually drew.
+Training is optional if you only want to evaluate the released checkpoints. Prepare all training
+annotations as described in the [data guide](DATA.md), then obtain the upstream Volt-B ScanNet++
+initialization following the [checkpoint guide](../checkpoints/README.md#which-weights-inference-uses).
+Each predictor starts from that initialization and is trained independently.
 
-| model | config | loss | released checkpoint |
-|---|---|---|---|
-| Track-1 part model | `insseg-spformer-volt-B-s1a-long.py` | Hungarian-matched classification + mask BCE + dice, weight decay 0.1 | `epoch_14` — the 14th of 20 evaluation checkpoints (70 % of the schedule), selected post hoc on the ranking column (`checkpoints/README.md`) |
-| Track-2 dense model | `semseg-volt-B-armA-long.py` | cross-entropy (class weights 0.1 / 1 / 1) + Lovász, weight decay 0.05, with the curriculum | `model_best` (the trainer's mIoU selection) |
-| joint model | `insseg-s2-joint-volt-B.py` | the Track-1 losses plus the child head's (class weights 1 / 1 / 2) | `model_last` |
+Install the trainer's logging dependencies in the same environment before launching a run:
 
-`configs/arti3d/` also holds three variants of the dense model that were trained for the disclosure
-table in `docs/RESULTS_VAL.md` (no curriculum; background weight 0.3; a second seed). They train no
-released checkpoint.
+```bash
+python -m pip install wandb tensorboardX
+```
 
-## Scope
+The upstream trainer imports these packages even when external experiment logging is disabled.
+The released configurations set `enable_wandb=False`; installing the import dependency does not
+require enabling online logging.
 
-This repository is the method, trained on the training split and evaluated on validation. Our
-competition entry, built on it, placed first on both tracks of the Articulate3D challenge test set
-and included additional engineering that is not part of this release.
+| Predictor | Training configuration | Supervision |
+|---|---|---|
+| Movable parts | [`insseg-spformer-volt-B-s1a-long.py`](../configs/arti3d/insseg-spformer-volt-B-s1a-long.py) | Hungarian-matched classification, mask BCE, and Dice |
+| Dense handles | [`semseg-volt-B-armA-long.py`](../configs/arti3d/semseg-volt-B-armA-long.py) | Weighted cross-entropy and Lovász loss |
+| Joint part-handle | [`insseg-s2-joint-volt-B.py`](../configs/arti3d/insseg-s2-joint-volt-B.py) | Part losses plus child BCE, Dice, and Tversky losses |
+
+All three recipes specify 400 epochs, AdamW configured with learning rate `3e-4`, a one-cycle
+schedule, batch size 2 with eight-step gradient accumulation, mixed-precision training, and EMA.
+The dense recipe uses a coarse-to-fine target schedule: 0.10 m dilation for the first 50% of
+training, 0.04 m until 80%, then undilated targets. This is a documented training choice, not a
+separately established contribution.
+
+Launch a model from the repository root with an explicit output directory. For example:
+
+```bash
+export PYTHONPATH="$PWD:$PWD/third_party/volt"
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+
+python third_party/volt/tools/train.py \
+  --config-file configs/arti3d/insseg-spformer-volt-B-s1a-long.py \
+  --num-gpus 1 \
+  --options save_path=exp/parts
+```
+
+For the other predictors, choose the corresponding configuration and a different `save_path`.
+The trainer accepts **`key=value`** overrides after `--options`. Without a `save_path` override,
+the inherited destination is `exp/default`.
+
+For custom data locations, update the nested `data.train.data_root`, `data.val.data_root`, and
+`data.test.data_root` entries; changing only top-level `data_root` does not rebuild those
+already-defined dictionaries. The joint model also needs each split's `child_root` updated.
+The pretrained initialization path can be overridden with `weight=/path/to/volt-base-scannetpp.pth`.
+
+Optimization uses the training split. Validation is used for checkpoint and recipe selection,
+so retraining and selection are not a validation-blind protocol. See the
+[checkpoint disclosure](../checkpoints/README.md#training-and-selection-disclosure).
+Inference uses full precision with TF32 disabled; changing precision can affect masks, component
+connectivity, and ranking. A new training run is not expected to reproduce identical weights.
+
+## Assumptions and limits
+
+The geometry is intended for approximately planar, upright indoor mechanisms such as cabinet doors
+and drawers. Non-vertical hinges, unusual translation directions, missing handles, and fragmented
+or incomplete part predictions can violate its assumptions. The method does not estimate a full
+motion trajectory or demonstrate downstream robotic manipulation.
+
+The quantitative evidence comes from Articulate3D validation. Coupling is the method's organizing
+idea; it is not a claim of generalization to every mechanical object or dataset. See
+[validation results and failure analysis](RESULTS_VAL.md) for the measured scope.
