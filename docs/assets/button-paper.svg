@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="104" height="40" viewBox="0 0 104 40" role="img" aria-label="Paper">
+  <title>Paper</title>
+  <rect x="0.5" y="0.5" width="103" height="39" rx="19.5" fill="#0066cc" stroke="#0066cc" />
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" x="18" y="10">
+    <path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6" />
+  </svg>
+  <text x="47" y="20" dominant-baseline="central" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="500">Paper</text>
+</svg>

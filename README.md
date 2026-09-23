@@ -7,6 +7,7 @@
 † Corresponding author: [Xingyi Yang](mailto:xingyi.yang@polyu.edu.hk)
 
 <p align="center">
+  <a href="https://arxiv.org/abs/2609.25247"><img src="docs/assets/button-paper.svg" width="104" height="40" alt="Paper on arXiv"></a>
   <a href="https://hyokong.github.io/segment-snap-page/"><img src="docs/assets/button-project.svg" width="152" height="40" alt="Project page"></a>
   <a href="https://huggingface.co/imsuperkong/Segment-Snap"><img src="docs/assets/button-huggingface.svg" width="166" height="40" alt="Hugging Face checkpoints"></a>
 </p>
@@ -190,13 +191,17 @@ ARTI3D_GT_ROOT=data/a3d/processed python -m arti3d.eval.selftest
 
 ## Citation
 
+If this work is useful to your research, please cite our [arXiv preprint](https://arxiv.org/abs/2609.25247).
+The citation is also available as [CITATION.bib](CITATION.bib).
+
 ```bibtex
-@misc{kong2026segmentsnap,
-  title  = {Geometric and Semantic Coupling for Interaction Understanding in 3D Scenes},
-  author = {Kong, Hanyang and Yang, Xingyi},
-  year   = {2026},
-  note   = {Technical report},
-  url    = {https://hyokong.github.io/segment-snap-page/}
+@article{kong2026segmentsnap,
+  title   = {Geometric and Semantic Coupling for
+             Interaction Understanding in 3D Scenes},
+  author  = {Kong, Hanyang and Yang, Xingyi},
+  journal = {arXiv preprint arXiv:2609.25247},
+  year    = {2026},
+  url     = {https://arxiv.org/abs/2609.25247}
 }
 ```
 
